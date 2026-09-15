@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "co.sunriserobotics.roboboy.vr",
+  "name": "VR Camera & Drive",
+  "description": "View WHEP camera streams in a headset and drive with the controllers.",
+  "version": "0.1.0",
+  "entryPoint": "./dist/index.js",
+  "integrity": "sha256-wgH4ya5+Hn2yy9R0MbPyAutIGjvriO5r9/VckqrTpwg=",
+  "compatibility": {
+    "panelApi": "^2.0.0",
+    "roboboy": ">=0.8.0-alpha <1.0.0"
+  },
+  "capabilities": [
+    "ros",
+    "network",
+    "storage",
+    "webxr"
+  ],
+  "permissions": {
+    "network": {
+      "hostEndpoints": [
+        "webrtcWhep",
+        "webrtcDiscovery"
+      ]
+    },
+    "ros": {
+      "publish": [
+        "/cmd_vel"
+      ]
+    }
+  },
+  "author": {
+    "name": "Sunrise Robotics"
+  },
+  "repository": "https://github.com/Sunrise-Robotics/robo-boy-vr-panel",
+  "tags": [
+    "vr",
+    "webxr",
+    "camera",
+    "webrtc",
+    "whep",
+    "teleop"
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "@sunrise-robotics/robo-boy-vr-panel",
+  "version": "0.1.0",
+  "description": "WebXR VR panel for Robo-Boy: view WHEP camera streams in a headset and drive with the controllers",
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "roboboy.panel.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": "./dist/index.js",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --minify --format=esm --platform=browser --target=es2020 --outfile=dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "integrity": "node scripts/print-integrity.mjs",
+    "validate:artifact": "node scripts/validate-artifact.mjs",
+    "validate": "npm run typecheck && npm test && npm run build && npm run validate:artifact"
+  },
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@tessel-la/roboboy-panel-sdk": "file:../robo-boy/panel-sdk",
+    "@types/three": "^0.185.1",
+    "@types/webxr": "^0.5.24",
+    "esbuild": "^0.25.12",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3"
+  }
+}
