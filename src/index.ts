@@ -14,7 +14,7 @@ import {
   type WhepConnection,
 } from './whep';
 import { VrScene } from './vrScene';
-import { DriveController } from './drive';
+import { PoseTeleopController } from './poseTeleop';
 import {
   canSelectStream,
   defaultSelectedStreamNames,
@@ -22,7 +22,10 @@ import {
 } from './cameraSelection';
 
 const PANEL_ID = 'co.sunriserobotics.roboboy.vr';
-const DRIVE_TOPIC = '/cmd_vel';
+const FLANGE_POSE_SUFFIX = '/flange_pose';
+const TARGET_POSE_SUFFIX = '/teleop_target_pose';
+const POSE_STAMPED_TYPE = 'geometry_msgs/msg/PoseStamped';
+const ROBOT_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 const PANEL_MARKUP = `
 <div class="rb-vr">
@@ -31,6 +34,8 @@ const PANEL_MARKUP = `
     .rb-vr button { font: inherit; padding: .5rem 1rem; border-radius: .4rem; border: 1px solid var(--border-color, #444); background: var(--primary-color, #2a6fb0); color: var(--button-text-color, #fff); cursor: pointer; }
     .rb-vr button:disabled { opacity: .5; cursor: default; }
     .rb-vr [data-role="status"] { color: var(--text-secondary, #aaa); font-size: .85rem; white-space: pre-line; }
+    .rb-vr [data-role="robot"] { display: flex; align-items: center; gap: .4rem; font-size: .9rem; }
+    .rb-vr [data-role="robot"] input { min-width: 0; flex: 1; font: inherit; padding: .35rem; }
     .rb-vr [data-role="armed"] { font-weight: 600; }
     .rb-vr [data-role="armed"][data-armed="true"] { color: var(--success-color, #4caf50); }
     .rb-vr [data-role="cameras"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .35rem .75rem; }
@@ -41,7 +46,9 @@ const PANEL_MARKUP = `
   <button data-action="enter" disabled>Enter VR</button>
   <div data-role="status">Discovering camera streams…</div>
   <div data-role="cameras" aria-label="Camera streams"></div>
-  <div data-role="armed" data-armed="false">Drive disarmed</div>
+  <label data-role="robot">Robot namespace <input data-role="robot-name" value="robot_big" autocomplete="off" /></label>
+  <button data-action="robot">Use robot</button>
+  <div data-role="armed" data-armed="false">Pose control disarmed</div>
   <div data-role="previews"></div>
   <div data-role="canvas-host"></div>
 </div>
@@ -66,16 +73,18 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
   const connections = new Map<string, WhepConnection>();
   const connectionControllers = new Map<string, AbortController>();
   const videos = new Map<string, HTMLVideoElement>();
+  let flangePoseSubscription: { unsubscribe(): Promise<void> } | null = null;
+  let robotSubscriptionGeneration = 0;
 
-  const driveController = new DriveController({
+  const poseTeleopController = new PoseTeleopController({
     ros,
-    topic: DRIVE_TOPIC,
     onArmedChange: (armed) => {
       const el = root?.querySelector<HTMLElement>('[data-role="armed"]');
       if (!el) return;
       el.dataset.armed = String(armed);
-      el.textContent = armed ? 'Drive armed — holding grip' : 'Drive disarmed';
+      el.textContent = armed ? 'Pose control armed — hold right squeeze to move' : 'Pose control disarmed';
     },
+    onPublishError: (error) => logger.warn('Unable to publish the pose target.', error),
   });
 
   const setStatus = (text: string) => {
@@ -86,6 +95,45 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
   const setEnterEnabled = () => {
     const button = root?.querySelector<HTMLButtonElement>('[data-action="enter"]');
     if (button) button.disabled = connections.size === 0;
+  };
+
+  const configureRobot = async () => {
+    const nameInput = root?.querySelector<HTMLInputElement>('[data-role="robot-name"]');
+    const robotName = nameInput?.value.trim() ?? '';
+    if (!ROBOT_NAME_PATTERN.test(robotName)) {
+      setStatus('Robot namespace may use only letters, numbers, underscores, and hyphens.');
+      return;
+    }
+
+    const generation = ++robotSubscriptionGeneration;
+    poseTeleopController.setTargetTopic(`/${robotName}${TARGET_POSE_SUFFIX}`);
+    const previousSubscription = flangePoseSubscription;
+    flangePoseSubscription = null;
+    if (previousSubscription) await previousSubscription.unsubscribe().catch((error) => logger.warn('Unable to unsubscribe from the previous flange pose.', error));
+
+    try {
+      const subscription = await ros.subscribe(
+        {
+          topic: `/${robotName}${FLANGE_POSE_SUFFIX}`,
+          messageType: POSE_STAMPED_TYPE,
+          throttleMs: 33,
+          queueLength: 1,
+        },
+        (message) => {
+          if (generation === robotSubscriptionGeneration) poseTeleopController.setRobotPose(message);
+        }
+      );
+      if (generation !== robotSubscriptionGeneration) {
+        await subscription.unsubscribe();
+        return;
+      }
+      flangePoseSubscription = subscription;
+      setStatus(`Using ${robotName}. Waiting for ${FLANGE_POSE_SUFFIX}.`);
+    } catch (error) {
+      if (generation === robotSubscriptionGeneration) {
+        setStatus(`Unable to subscribe to /${robotName}${FLANGE_POSE_SUFFIX}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   };
 
   const cameraByName = (name: string) => discoveredStreams.find((stream) => stream.name === name);
@@ -254,10 +302,10 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       if (!root) throw new Error('Unable to create the VR panel root.');
 
       vrScene = new VrScene({
-        onGamepad: (gamepad) => driveController.update(gamepad),
+        onRightControllerFrame: (frame) => poseTeleopController.update(frame),
         onToggle: (name) => toggleStream(name, !selectedStreamNames.has(name)),
         onExit: () => {
-          driveController.stop();
+          poseTeleopController.stop();
           setStatus('VR session ended.');
         },
       });
@@ -265,20 +313,25 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
 
       root.addEventListener('click', (event) => {
         const action = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-action]')?.dataset.action : undefined;
+        if (action === 'robot') {
+          void configureRobot();
+          return;
+        }
         if (action !== 'enter') return;
         void vrScene
           ?.enter()
-          .then(() => setStatus('In VR: trigger a camera name to toggle it, grip a screen to move it, or point at "Exit VR" and trigger. Hold right grip to drive.'))
+          .then(() => setStatus('In VR: A arms pose control, B re-anchors, and right squeeze is the clutch.'))
           .catch((error) => setStatus(`Entering VR failed: ${error instanceof Error ? error.message : String(error)}`));
       });
 
+      void configureRobot();
       void refreshStreams();
     },
     setActive(isActive) {
       const wasActive = active;
       active = isActive;
       if (!isActive) {
-        driveController.stop();
+        poseTeleopController.stop();
         void teardownStreams();
       } else if (!wasActive) {
         void refreshStreams();
@@ -288,7 +341,11 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       active = false;
       discoveryController?.abort();
       discoveryController = null;
-      driveController.stop();
+      poseTeleopController.stop();
+      robotSubscriptionGeneration += 1;
+      const subscription = flangePoseSubscription;
+      flangePoseSubscription = null;
+      if (subscription) await subscription.unsubscribe().catch((error) => logger.warn('Unable to unsubscribe from the flange pose.', error));
       await teardownStreams();
       vrScene?.dispose();
       vrScene = null;

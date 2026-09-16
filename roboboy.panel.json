@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "co.sunriserobotics.roboboy.vr",
-  "name": "VR Camera & Drive",
-  "description": "View WHEP camera streams in a headset and drive with the controllers.",
-  "version": "0.2.0",
+  "name": "VR Camera & Pose Teleop",
+  "description": "View WHEP camera streams in a headset and publish clutched controller pose targets.",
+  "version": "0.3.0",
   "entryPoint": "./dist/index.js",
-  "integrity": "sha256-PlmYNdvwSPcKCqjr/YNxNoMvXBZfAQXozdvLC03v8FA=",
+  "integrity": "sha256-9lk+vL8fUEKmxf0Xu/aQno2et2qkBj6rYHdkWh8PYDk=",
   "compatibility": {
     "panelApi": "^2.0.0",
     "roboboy": ">=0.8.0-alpha <1.0.0"
@@ -25,7 +25,10 @@
     },
     "ros": {
       "publish": [
-        "/cmd_vel"
+        "/*/teleop_target_pose"
+      ],
+      "subscribe": [
+        "/*/flange_pose"
       ]
     }
   },

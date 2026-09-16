@@ -3,6 +3,16 @@
 // owns the WebXR scene and reports trigger actions back to it.
 import * as THREE from 'three';
 
+const RIGHT_A_BUTTON = 4;
+const RIGHT_B_BUTTON = 5;
+
+export interface VrControllerFrame {
+  pose: { position: THREE.Vector3; orientation: THREE.Quaternion } | null;
+  squeeze: number;
+  armPressed: boolean;
+  reanchorPressed: boolean;
+}
+
 const PANEL_POSITIONS: Array<[number, number, number]> = [
   [-1.8, 1.7, -2.8],
   [0, 1.7, -2.8],
@@ -40,7 +50,7 @@ interface CameraButton {
 }
 
 export interface VrSceneOptions {
-  onGamepad(gamepad: Gamepad | null): void;
+  onRightControllerFrame(frame: VrControllerFrame): void;
   onToggle(id: string): void;
   onExit(): void;
 }
@@ -52,20 +62,21 @@ export class VrScene {
   private readonly panels = new Map<string, PanelEntry>();
   private readonly buttons = new Map<string, THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>>();
   private readonly controllers: THREE.XRTargetRaySpace[];
+  private readonly controllerGrips: THREE.Group[];
   private readonly raycaster = new THREE.Raycaster();
   private readonly tempMatrix = new THREE.Matrix4();
   private readonly viewerPosition = new THREE.Vector3();
   private readonly controllerPosition = new THREE.Vector3();
   private readonly targetPosition = new THREE.Vector3();
   private readonly exitButton: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
-  private readonly onGamepad: VrSceneOptions['onGamepad'];
+  private readonly onRightControllerFrame: VrSceneOptions['onRightControllerFrame'];
   private readonly onToggle: VrSceneOptions['onToggle'];
   private readonly onExitCallback: VrSceneOptions['onExit'];
   private session: XRSession | null = null;
   private grabbedBy = new Map<THREE.XRTargetRaySpace, THREE.Mesh>();
 
   constructor(options: VrSceneOptions) {
-    this.onGamepad = options.onGamepad;
+    this.onRightControllerFrame = options.onRightControllerFrame;
     this.onToggle = options.onToggle;
     this.onExitCallback = options.onExit;
 
@@ -85,16 +96,24 @@ export class VrScene {
     this.scene.add(new THREE.HemisphereLight('#ffffff', '#334455', 2));
 
     this.controllers = [this.renderer.xr.getController(0), this.renderer.xr.getController(1)];
-    this.controllers.forEach((controller) => {
-      controller.add(
-        new THREE.Line(
+    this.controllerGrips = [this.renderer.xr.getControllerGrip(0), this.renderer.xr.getControllerGrip(1)];
+    this.controllers.forEach((controller, index) => {
+      const pointer = new THREE.Line(
           new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -5)]),
           new THREE.LineBasicMaterial({ color: '#66ccff' })
-        )
       );
+      controller.add(pointer);
+      controller.addEventListener('connected', (event) => {
+        controller.userData.inputSource = (event as unknown as { data: XRInputSource }).data;
+      });
+      controller.addEventListener('disconnected', () => {
+        controller.userData.inputSource = undefined;
+        pointer.visible = true;
+      });
       controller.addEventListener('selectstart', () => this.select(controller));
       controller.addEventListener('selectend', () => this.drop(controller));
       this.scene.add(controller);
+      this.scene.add(this.controllerGrips[index]!);
     });
 
     this.exitButton = new THREE.Mesh(
@@ -247,8 +266,7 @@ export class VrScene {
 
   private render(): void {
     if (this.session) {
-      const right = [...this.session.inputSources].find((source) => source.handedness === 'right')?.gamepad;
-      this.onGamepad(right ?? null);
+      this.updateRightController();
       this.viewerPosition.setFromMatrixPosition(this.renderer.xr.getCamera().matrixWorld);
       this.panels.forEach((entry) => {
         if (entry.drag) {
@@ -262,5 +280,42 @@ export class VrScene {
       });
     }
     this.renderer.render(this.scene, this.camera);
+  }
+
+  private updateRightController(): void {
+    const index = this.controllers.findIndex(
+      (controller) => (controller.userData.inputSource as XRInputSource | undefined)?.handedness === 'right'
+    );
+    if (index < 0) {
+      this.onRightControllerFrame({ pose: null, squeeze: 0, armPressed: false, reanchorPressed: false });
+      return;
+    }
+
+    const controller = this.controllers[index]!;
+    const grip = this.controllerGrips[index]!;
+    const inputSource = controller.userData.inputSource as XRInputSource;
+    const gamepad = inputSource.gamepad;
+    const squeeze = gamepad?.buttons[1]?.value ?? 0;
+    const clutchHeld = squeeze >= 0.5;
+    controller.children.forEach((child) => {
+      child.visible = !clutchHeld;
+    });
+
+    if (!inputSource.gripSpace || !gamepad) {
+      this.onRightControllerFrame({ pose: null, squeeze, armPressed: false, reanchorPressed: false });
+      return;
+    }
+
+    this.onRightControllerFrame({
+      pose: {
+        position: grip.getWorldPosition(new THREE.Vector3()),
+        orientation: grip.getWorldQuaternion(new THREE.Quaternion()),
+      },
+      squeeze,
+      // xr-standard reserves buttons 0-3 for trigger, squeeze, touchpad, and thumbstick.
+      // Quest Touch exposes its right A/B face buttons after those reserved slots.
+      armPressed: gamepad.buttons[RIGHT_A_BUTTON]?.pressed ?? false,
+      reanchorPressed: gamepad.buttons[RIGHT_B_BUTTON]?.pressed ?? false,
+    });
   }
 }

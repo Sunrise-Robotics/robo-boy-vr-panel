@@ -1,8 +1,8 @@
-# Robo-Boy VR Camera & Drive Panel
+# Robo-Boy VR Camera & Pose Teleop Panel
 
 A Robo-Boy external panel that renders WHEP camera streams as floating video
-panels inside a WebXR (`immersive-vr`) session, and lets you drive the robot
-with the right controller while you're in there.
+panels inside a WebXR (`immersive-vr`) session and publishes a clutched
+right-controller pose target while you're in there.
 
 It is a port of two things that already worked:
 
@@ -14,12 +14,13 @@ It is a port of two things that already worked:
   [`roboboy-webrtc-panel`](https://github.com/tessel-la/roboboy-webrtc-panel),
   Robo-Boy's reference WebRTC panel (MIT-licensed, see `LICENSE`).
 
-Driving is new: `src/drive.ts` polls the right controller's `Gamepad` each
-frame, applies the same deadzone math as Robo-Boy's built-in gamepad panel
-(`applyGamepadDeadzone`, ported from
-`robo-boy/src/features/customGamepad/physicalGamepad.ts`), and publishes a
-throttled (20 Hz), dead-man-gated `geometry_msgs/Twist` to `/cmd_vel` via the
-panel SDK's brokered `context.ros.publish`.
+`src/poseTeleop.ts` follows the fixed-robot Quest path from `ai_policy_stack`:
+the right controller's **grip pose** produces a 6-DoF Cartesian target, gated
+by its squeeze clutch. It subscribes to `/{robot}/flange_pose` to initialize
+and re-anchor, then publishes `geometry_msgs/msg/PoseStamped` to
+`/{robot}/teleop_target_pose` at 30 Hz through Robo-Boy's brokered ROS API.
+There is deliberately no robot-side consumer in this repository yet, so these
+messages alone cannot cause robot motion.
 
 ## Requirements
 
@@ -41,9 +42,15 @@ fork until it's merged upstream.
 - **Grip (either controller)**: grab a floating camera panel to reposition
   it; release to let it settle and face you again.
 - **Trigger, pointed at "Exit VR"**: leaves the immersive session.
-- **Grip, held, right controller**: arms driving. Thumbstick forward/back
-  maps to `linear.x`, left/right to `angular.z`. Releasing the grip
-  immediately publishes a zero `Twist`.
+- **Robot namespace / Use robot**: selects the fixed robot's ROS namespace.
+  The panel listens to `/{robot}/flange_pose` and targets
+  `/{robot}/teleop_target_pose`.
+- **Right A**: arm or disarm pose publishing. Arming re-anchors to the latest
+  flange pose first.
+- **Right B**: re-anchor to the latest flange pose without changing arm state.
+- **Right squeeze (hold)**: clutch. While armed, the grip pose moves and
+  rotates the target; on release the target holds. The right-hand cyan laser
+  is hidden while squeezed and shown while released.
 
 ## Laptop relay for a VPN-only cell
 
@@ -84,8 +91,15 @@ The right controller's commands take the normal Robo-Boy route:
 Quest controller → VR panel → laptop /websocket proxy → Robo-Boy on CELL_IP → ROS /cmd_vel
 ```
 
-The panel keeps the existing dead-man behavior: grip release, controller loss,
-VR exit, panel deactivation, and unmount publish a zero `Twist` immediately.
+For pose teleop, that final ROS hop is instead:
+
+```
+Quest controller → VR panel → laptop /websocket proxy → Robo-Boy on CELL_IP → ROS /{robot}/teleop_target_pose
+```
+
+Disarming, controller loss, VR exit, panel deactivation, and unmount stop
+publishing immediately. Releasing the squeeze does not disarm: it holds the
+last target while the session remains armed.
 
 ## Development
 
@@ -100,9 +114,10 @@ See Robo-Boy's `docs/custom-panels.md` for how to stage this panel locally
 
 ## What's deliberately not here yet
 
-- No settings UI for the drive topic, axis mapping, or dead-man button --
-  they're fixed constants in `src/drive.ts`. Add a settings panel (like
-  `roboboy-webrtc-panel`'s) if a fixed `/cmd_vel` Twist stops being enough.
+- No robot-side consumer yet. A later, separately deployed Cartesian controller
+  must validate and apply `/{robot}/teleop_target_pose` for each fixed robot.
+- The WebXR-to-robot axis basis is ported from `ai_policy_stack`; verify axis
+  directions at low limits when that consumer is introduced.
 - No HLS fallback for webviews without `RTCPeerConnection` (the reference
   WebRTC panel has one). Quest Browser has full WebRTC support, so this
   wasn't needed for the first working version.
