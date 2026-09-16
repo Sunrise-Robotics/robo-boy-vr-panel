@@ -1,0 +1,40 @@
+{
+	admin off
+	auto_https off
+}
+
+# The Quest sees this as its complete Robo-Boy origin. Only WHEP negotiation stays on the laptop;
+# Robo-Boy itself, its panel assets, and the ROS WebSocket continue to live on the selected cell.
+https://{$VR_LAN_IP}:{$VR_HTTPS_PORT:443} {
+	bind {$VR_LAN_IP}
+	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+
+	# Use the cell's existing guarded discovery route rather than exposing its MediaMTX API to the
+	# LAN. The IP Host header also works around Vite's development host allow-list on the cell.
+	handle /webrtc/_discovery/paths {
+		@get method GET
+		handle @get {
+			reverse_proxy http://{$CELL_IP}:{$CELL_HTTP_PORT:80} {
+				header_up Host {$CELL_IP}
+			}
+		}
+		respond "Method not allowed" 405
+	}
+
+	# Signalling is local. MediaMTX advertises only the laptop LAN candidate, so media never
+	# attempts to travel directly between the Quest and the VPN-only cell.
+	handle /webrtc* {
+		uri strip_prefix /webrtc
+		reverse_proxy http://127.0.0.1:8889 {
+			header_down Location ^/(.*)$ /webrtc/$1
+		}
+	}
+
+	# Caddy handles WebSocket upgrades automatically, including Robo-Boy's /websocket route that
+	# carries the panel's brokered ROS publish calls to the cell's rosbridge instance.
+	handle {
+		reverse_proxy http://{$CELL_IP}:{$CELL_HTTP_PORT:80} {
+			header_up Host {$CELL_IP}
+		}
+	}
+}

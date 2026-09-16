@@ -60,11 +60,12 @@ test("refuses a stream path that would leave the gateway", () => {
   );
 });
 
-test("keeps only ready, valid, deduplicated gateway streams", () => {
+test("keeps ready and on-demand RTSP streams, while excluding other unavailable paths", () => {
   assert.deepEqual(
     parseGatewayStreams({
       items: [
         { name: "z_camera", ready: true, tracks: ["H264"] },
+        { name: "idle_rtsp", ready: false, source: { type: "rtspSource" }, tracks: ["H264"] },
         { name: "offline", ready: false, tracks: ["H264"] },
         { name: "../invalid", ready: true },
         { name: "a_camera", ready: true, tracks: ["VP9", 42] },
@@ -73,6 +74,7 @@ test("keeps only ready, valid, deduplicated gateway streams", () => {
     }),
     [
       { name: "a_camera", tracks: ["VP9"] },
+      { name: "idle_rtsp", tracks: ["H264"] },
       { name: "z_camera", tracks: ["H264", "Opus"] },
     ],
   );

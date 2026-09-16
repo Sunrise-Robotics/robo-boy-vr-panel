@@ -1,7 +1,6 @@
-// Ported from ~/sunrise/whep-test/public/vr-scene.js (a working proof of concept already tested
-// in a Quest headset): video-texture-on-a-plane per camera stream, controller ray for grab/drop,
-// exit button. Camera-toggle buttons are dropped -- this panel connects every discovered stream
-// automatically rather than offering a manual per-camera picker.
+// Ported from ~/sunrise/whep-test/public/vr-scene.js: video planes, controller grab/drop,
+// camera toggles, and an exit button. The panel supplies the stream lifecycle; this class only
+// owns the WebXR scene and reports trigger actions back to it.
 import * as THREE from 'three';
 
 const PANEL_POSITIONS: Array<[number, number, number]> = [
@@ -30,11 +29,19 @@ function labelTexture(text: string, color = '#222'): THREE.CanvasTexture {
 interface PanelEntry {
   mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   home: [number, number, number];
+  positionIndex: number;
   drag: { scale: number; distance: number } | null;
+}
+
+interface CameraButton {
+  id: string;
+  label: string;
+  enabled: boolean;
 }
 
 export interface VrSceneOptions {
   onGamepad(gamepad: Gamepad | null): void;
+  onToggle(id: string): void;
   onExit(): void;
 }
 
@@ -43,6 +50,7 @@ export class VrScene {
   private readonly scene: THREE.Scene;
   private readonly camera: THREE.PerspectiveCamera;
   private readonly panels = new Map<string, PanelEntry>();
+  private readonly buttons = new Map<string, THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>>();
   private readonly controllers: THREE.XRTargetRaySpace[];
   private readonly raycaster = new THREE.Raycaster();
   private readonly tempMatrix = new THREE.Matrix4();
@@ -51,18 +59,18 @@ export class VrScene {
   private readonly targetPosition = new THREE.Vector3();
   private readonly exitButton: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   private readonly onGamepad: VrSceneOptions['onGamepad'];
+  private readonly onToggle: VrSceneOptions['onToggle'];
   private readonly onExitCallback: VrSceneOptions['onExit'];
   private session: XRSession | null = null;
   private grabbedBy = new Map<THREE.XRTargetRaySpace, THREE.Mesh>();
 
   constructor(options: VrSceneOptions) {
     this.onGamepad = options.onGamepad;
+    this.onToggle = options.onToggle;
     this.onExitCallback = options.onExit;
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.xr.enabled = true;
-    // Hidden on the flat panel: this canvas only ever needs to be seen inside the headset, once
-    // an immersive session takes it over.
     Object.assign(this.renderer.domElement.style, {
       position: 'fixed',
       width: '1px',
@@ -103,7 +111,24 @@ export class VrScene {
     container.append(this.renderer.domElement);
   }
 
-  addStream(id: string, label: string, video: HTMLVideoElement): void {
+  setCameras(cameras: CameraButton[]): void {
+    this.buttons.forEach((button) => this.disposeButton(button));
+    this.buttons.clear();
+    cameras.forEach((camera, index) => {
+      const button = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.1, 0.26),
+        new THREE.MeshBasicMaterial({
+          map: labelTexture(`${camera.enabled ? '✓ ' : ''}${camera.label}`, camera.enabled ? '#357a38' : '#24506b'),
+        })
+      );
+      button.position.set(-2.35 + (index % 2) * 1.2, 2.25 - Math.floor(index / 2) * 0.34, -2.5);
+      button.userData.cameraId = camera.id;
+      this.buttons.set(camera.id, button);
+      this.scene.add(button);
+    });
+  }
+
+  addStream(id: string, _label: string, video: HTMLVideoElement): void {
     if (this.panels.has(id)) return;
     const texture = new THREE.VideoTexture(video);
     texture.colorSpace = THREE.SRGBColorSpace;
@@ -111,11 +136,11 @@ export class VrScene {
       new THREE.PlaneGeometry(1.6, 0.9),
       new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide })
     );
-    const home = PANEL_POSITIONS[this.panels.size % PANEL_POSITIONS.length];
+    const positionIndex = this.nextPanelPositionIndex();
+    const home = PANEL_POSITIONS[positionIndex]!;
     mesh.position.set(...home);
-    this.panels.set(id, { mesh, home, drag: null });
+    this.panels.set(id, { mesh, home, positionIndex, drag: null });
     this.scene.add(mesh);
-    void label; // reserved for a future name label, matching the camera-toggle button whep-test drew
   }
 
   removeStream(id: string): void {
@@ -144,11 +169,25 @@ export class VrScene {
     this.renderer.setAnimationLoop(null);
     void this.session?.end().catch(() => {});
     [...this.panels.keys()].forEach((id) => this.removeStream(id));
+    this.buttons.forEach((button) => this.disposeButton(button));
+    this.buttons.clear();
     this.exitButton.material.map?.dispose();
     this.exitButton.material.dispose();
     this.exitButton.geometry.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
+  }
+
+  private disposeButton(button: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>): void {
+    button.material.map?.dispose();
+    button.material.dispose();
+    button.geometry.dispose();
+    this.scene.remove(button);
+  }
+
+  private nextPanelPositionIndex(): number {
+    const occupied = new Set([...this.panels.values()].map((entry) => entry.positionIndex));
+    return PANEL_POSITIONS.findIndex((_, index) => !occupied.has(index));
   }
 
   private hits(controller: THREE.XRTargetRaySpace, items: THREE.Object3D[]): THREE.Object3D | undefined {
@@ -159,6 +198,11 @@ export class VrScene {
   }
 
   private select(controller: THREE.XRTargetRaySpace): void {
+    const button = this.hits(controller, [...this.buttons.values()]) as THREE.Mesh | undefined;
+    if (button) {
+      this.onToggle(String(button.userData.cameraId));
+      return;
+    }
     if (this.hits(controller, [this.exitButton])) {
       void this.session?.end();
       return;

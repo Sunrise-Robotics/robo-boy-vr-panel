@@ -1,0 +1,49 @@
+services:
+  caddy:
+    image: caddy:2.11.4-alpine
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      CELL_IP: ${CELL_IP:?Set CELL_IP to the VPN address of the robot cell.}
+      CELL_HTTP_PORT: ${CELL_HTTP_PORT:-80}
+      VR_LAN_IP: ${VR_LAN_IP:?Set VR_LAN_IP to the laptop home-LAN address.}
+      VR_HTTPS_PORT: ${VR_HTTPS_PORT:-443}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${VR_TLS_CERT:?Set VR_TLS_CERT to an absolute certificate path.}:/etc/caddy/certs/cert.pem:ro
+      - ${VR_TLS_KEY:?Set VR_TLS_KEY to an absolute key path.}:/etc/caddy/certs/key.pem:ro
+    depends_on:
+      mediamtx:
+        condition: service_started
+
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.0
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      MTX_WEBRTCLOCALUDPADDRESS: ${VR_LAN_IP:?Set VR_LAN_IP to the laptop home-LAN address.}:${VR_ICE_PORT:-8189}
+      MTX_WEBRTCIPSFROMINTERFACES: 'false'
+      MTX_WEBRTCADDITIONALHOSTS: ${VR_LAN_IP:?Set VR_LAN_IP to the laptop home-LAN address.}
+    configs:
+      - source: mediamtx
+        target: /mediamtx.yml
+
+configs:
+  mediamtx:
+    content: |
+      api: true
+      apiAddress: 127.0.0.1:9997
+      rtsp: false
+      rtmp: false
+      hls: false
+      srt: false
+      playback: false
+      moq: false
+      webrtc: true
+      webrtcAddress: 127.0.0.1:8889
+      webrtcLocalUDPAddress: :8189
+      webrtcIPsFromInterfaces: false
+      paths:
+        "~^([A-Za-z0-9][A-Za-z0-9_-]*)$$":
+          source: rtsp://${CELL_IP:?Set CELL_IP to the VPN address of the robot cell.}:${CELL_RTSP_PORT:-8554}/$$G1
+          sourceOnDemand: true

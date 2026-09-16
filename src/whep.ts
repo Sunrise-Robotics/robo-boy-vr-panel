@@ -158,9 +158,14 @@ export const parseGatewayStreams = (value: unknown): GatewayStream[] => {
       name?: unknown;
       ready?: unknown;
       tracks?: unknown;
+      source?: { type?: unknown };
     };
+    // A static RTSP source with sourceOnDemand stays unready until a reader arrives. Keeping it
+    // in the picker lets the operator's first WHEP request start that pull; other unready paths
+    // still stay hidden.
+    const isOnDemandRtspSource = path.source?.type === 'rtspSource';
     if (
-      path.ready !== true ||
+      (path.ready !== true && !isOnDemandRtspSource) ||
       typeof path.name !== "string" ||
       !/^[a-z0-9][a-z0-9_-]*$/i.test(path.name)
     )

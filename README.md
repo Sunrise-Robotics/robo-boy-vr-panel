@@ -31,14 +31,61 @@ fork until it's merged upstream.
 
 ## Controls
 
-- **Enter VR**: starts the immersive session once at least one camera stream
-  has connected.
+- **Camera checkboxes**: the first two discovered cameras are selected on a
+  fresh mount. Enable or disable the rest explicitly, up to five concurrent
+  streams.
+- **Enter VR**: starts the immersive session once at least one selected camera
+  stream has connected.
+- **Trigger, pointed at a camera name**: enables or disables that stream in
+  VR. The five-stream limit applies here too.
 - **Grip (either controller)**: grab a floating camera panel to reposition
   it; release to let it settle and face you again.
 - **Trigger, pointed at "Exit VR"**: leaves the immersive session.
 - **Grip, held, right controller**: arms driving. Thumbstick forward/back
   maps to `linear.x`, left/right to `angular.z`. Releasing the grip
   immediately publishes a zero `Twist`.
+
+## Laptop relay for a VPN-only cell
+
+The Quest reaches a local HTTPS endpoint on the laptop. The relay forwards the
+Robo-Boy UI, panel assets, and `/websocket` to the selected cell over the
+Sunrise VPN. It keeps WHEP signalling and WebRTC media on the laptop:
+
+```
+Quest → laptop HTTPS → Robo-Boy on CELL_IP
+Quest ← laptop WebRTC ← laptop MediaMTX ← RTSP over VPN ← CELL_IP
+```
+
+The cell is selected at relay startup, not compiled into the panel. Create a
+local configuration and set `CELL_IP` to its VPN address:
+
+```sh
+cp relay/.env.example relay/.env
+# Edit relay/.env: CELL_IP, VR_LAN_IP, VR_TLS_CERT, and VR_TLS_KEY.
+docker compose --env-file relay/.env -f relay/compose.yml up -d
+```
+
+For Mimas, the current value is `CELL_IP=10.243.10.22`. On this laptop, the
+existing `whep-test` development certificate is valid for
+`VR_LAN_IP=192.168.1.34`; point `VR_TLS_CERT` and `VR_TLS_KEY` at those files.
+Allow TCP `443` and UDP `8189` from the home LAN firewall.
+
+The relay obtains the camera inventory through the cell's existing
+`/webrtc/_discovery/paths` route. It includes ready streams and configured
+on-demand RTSP sources, so selecting an idle camera such as `inhand` starts
+the pull without maintaining a local camera list. Each selected path becomes a
+local WHEP request; local MediaMTX maps it to
+`rtsp://CELL_IP:8554/<path>` and closes that RTSP source after its readers
+leave. The Quest only exchanges WebRTC UDP with the laptop, never the cell.
+
+The right controller's commands take the normal Robo-Boy route:
+
+```
+Quest controller → VR panel → laptop /websocket proxy → Robo-Boy on CELL_IP → ROS /cmd_vel
+```
+
+The panel keeps the existing dead-man behavior: grip release, controller loss,
+VR exit, panel deactivation, and unmount publish a zero `Twist` immediately.
 
 ## Development
 
