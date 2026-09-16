@@ -56,8 +56,8 @@ fork until it's merged upstream.
   2D panel and as a small VR light.
 
 The initial camera layout is relative to seated eye height: camera planes are
-slightly below eye level and the stream/exit controls sit above them, so the
-controls do not cover the images.
+slightly below eye level. The stream/exit controls retain their familiar
+layout, shifted only slightly down, while remaining clear of the images.
 
 ## Laptop relay for a VPN-only cell
 

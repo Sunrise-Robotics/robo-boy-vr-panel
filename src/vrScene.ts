@@ -121,14 +121,14 @@ export class VrScene {
       new THREE.PlaneGeometry(1.1, 0.26),
       new THREE.MeshBasicMaterial({ map: labelTexture('Exit VR', '#7a3535') })
     );
-    this.exitButton.position.set(1.9, 1.35, -2.5);
+    this.exitButton.position.set(1.25, 1.85, -2.5);
     this.scene.add(this.exitButton);
 
     this.motionIndicator = new THREE.Mesh(
       new THREE.SphereGeometry(0.09, 20, 12),
       new THREE.MeshBasicMaterial({ color: '#b62222' })
     );
-    this.motionIndicator.position.set(-1.9, 1.35, -2.5);
+    this.motionIndicator.position.set(-1.9, 2.2, -2.5);
     this.scene.add(this.motionIndicator);
 
     this.renderer.setAnimationLoop(() => this.render());
@@ -148,7 +148,7 @@ export class VrScene {
           map: labelTexture(`${camera.enabled ? '✓ ' : ''}${camera.label}`, camera.enabled ? '#357a38' : '#24506b'),
         })
       );
-      button.position.set(-2.4 + index * 1.2, 0.95, -2.5);
+      button.position.set(-2.35 + (index % 2) * 1.2, 1.85 - Math.floor(index / 2) * 0.34, -2.5);
       button.userData.cameraId = camera.id;
       this.buttons.set(camera.id, button);
       this.scene.add(button);
