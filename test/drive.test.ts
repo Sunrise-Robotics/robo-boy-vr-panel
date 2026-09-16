@@ -43,7 +43,7 @@ test("arms on grip hold and publishes a scaled Twist from the thumbstick", () =>
   controller.update(fakeGamepad({ axes: [0, 0, 0.5, -1], buttons: [{ pressed: false } as any, { pressed: true } as any] }));
   assert.equal(published.length, 1);
   assert.equal(published[0].topic, "/cmd_vel");
-  assert.equal(published[0].messageType, "geometry_msgs/Twist");
+  assert.equal(published[0].messageType, "geometry_msgs/msg/Twist");
   assert.ok(published[0].message.linear.x > 0); // -axes[3] with axes[3] = -1
   assert.ok(published[0].message.angular.z < 0); // -axes[2] with axes[2] = 0.5
 });

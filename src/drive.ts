@@ -65,7 +65,7 @@ export class DriveController {
   constructor(options: DriveControllerOptions) {
     this.ros = options.ros;
     this.topic = options.topic;
-    this.messageType = options.messageType ?? 'geometry_msgs/Twist';
+    this.messageType = options.messageType ?? 'geometry_msgs/msg/Twist';
     this.onArmedChange = options.onArmedChange;
   }
 
