@@ -14,11 +14,11 @@ export interface VrControllerFrame {
 }
 
 const PANEL_POSITIONS: Array<[number, number, number]> = [
-  [-1.8, 1.7, -2.8],
-  [0, 1.7, -2.8],
-  [1.8, 1.7, -2.8],
-  [-0.9, 0.5, -2.4],
-  [0.9, 0.5, -2.4],
+  [-1.8, -0.1, -2.8],
+  [0, -0.1, -2.8],
+  [1.8, -0.1, -2.8],
+  [-0.9, -1.3, -2.4],
+  [0.9, -1.3, -2.4],
 ];
 
 function labelTexture(text: string, color = '#222'): THREE.CanvasTexture {
@@ -69,6 +69,7 @@ export class VrScene {
   private readonly controllerPosition = new THREE.Vector3();
   private readonly targetPosition = new THREE.Vector3();
   private readonly exitButton: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  private readonly motionIndicator: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
   private readonly onRightControllerFrame: VrSceneOptions['onRightControllerFrame'];
   private readonly onToggle: VrSceneOptions['onToggle'];
   private readonly onExitCallback: VrSceneOptions['onExit'];
@@ -120,8 +121,15 @@ export class VrScene {
       new THREE.PlaneGeometry(1.1, 0.26),
       new THREE.MeshBasicMaterial({ map: labelTexture('Exit VR', '#7a3535') })
     );
-    this.exitButton.position.set(1.25, 2.25, -2.5);
+    this.exitButton.position.set(1.9, 1.35, -2.5);
     this.scene.add(this.exitButton);
+
+    this.motionIndicator = new THREE.Mesh(
+      new THREE.SphereGeometry(0.09, 20, 12),
+      new THREE.MeshBasicMaterial({ color: '#b62222' })
+    );
+    this.motionIndicator.position.set(-1.9, 1.35, -2.5);
+    this.scene.add(this.motionIndicator);
 
     this.renderer.setAnimationLoop(() => this.render());
   }
@@ -140,7 +148,7 @@ export class VrScene {
           map: labelTexture(`${camera.enabled ? '✓ ' : ''}${camera.label}`, camera.enabled ? '#357a38' : '#24506b'),
         })
       );
-      button.position.set(-2.35 + (index % 2) * 1.2, 2.25 - Math.floor(index / 2) * 0.34, -2.5);
+      button.position.set(-2.4 + index * 1.2, 0.95, -2.5);
       button.userData.cameraId = camera.id;
       this.buttons.set(camera.id, button);
       this.scene.add(button);
@@ -172,6 +180,10 @@ export class VrScene {
     this.panels.delete(id);
   }
 
+  setMotionActive(active: boolean): void {
+    this.motionIndicator.material.color.set(active ? '#25b84b' : '#b62222');
+  }
+
   async enter(): Promise<void> {
     this.panels.forEach((entry) => entry.mesh.position.set(...entry.home));
     const session = await navigator.xr!.requestSession('immersive-vr', { optionalFeatures: ['local-floor'] });
@@ -193,6 +205,8 @@ export class VrScene {
     this.exitButton.material.map?.dispose();
     this.exitButton.material.dispose();
     this.exitButton.geometry.dispose();
+    this.motionIndicator.material.dispose();
+    this.motionIndicator.geometry.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

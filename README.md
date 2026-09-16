@@ -42,8 +42,8 @@ fork until it's merged upstream.
 - **Grip (either controller)**: grab a floating camera panel to reposition
   it; release to let it settle and face you again.
 - **Trigger, pointed at "Exit VR"**: leaves the immersive session.
-- **Robot namespace / Use robot**: selects the fixed robot's ROS namespace.
-  The panel listens to `/{robot}/flange_pose` and targets
+- **Robot dropdown**: switches immediately between `robot_small` and
+  `robot_big`. The panel listens to `/{robot}/flange_pose` and targets
   `/{robot}/teleop_target_pose`.
 - **Right A**: arm or disarm pose publishing. Arming re-anchors to the latest
   flange pose first.
@@ -51,6 +51,13 @@ fork until it's merged upstream.
 - **Right squeeze (hold)**: clutch. While armed, the grip pose moves and
   rotates the target; on release the target holds. The right-hand cyan laser
   is hidden while squeezed and shown while released.
+- **Motion indicator**: red means the clutch is inactive; green means an
+  armed right controller is actively sending pose motion. It appears in the
+  2D panel and as a small VR light.
+
+The initial camera layout is relative to seated eye height: camera planes are
+slightly below eye level and the stream/exit controls sit above them, so the
+controls do not cover the images.
 
 ## Laptop relay for a VPN-only cell
 

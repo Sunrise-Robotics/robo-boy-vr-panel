@@ -30,6 +30,7 @@ export interface PoseTeleopInput {
 export interface PoseTeleopControllerOptions {
   ros: RoboBoyPanelRos;
   onArmedChange?(armed: boolean): void;
+  onMotionChange?(moving: boolean): void;
   onPublishError?(error: unknown): void;
 }
 
@@ -88,6 +89,7 @@ export const parsePoseStamped = (message: RoboBoyJsonObject): RobotPose | null =
 export class PoseTeleopController {
   private readonly ros: RoboBoyPanelRos;
   private readonly onArmedChange?: (armed: boolean) => void;
+  private readonly onMotionChange?: (moving: boolean) => void;
   private readonly onPublishError?: (error: unknown) => void;
   private targetTopic: string | null = null;
   private latestRobotPose: RobotPose | null = null;
@@ -97,10 +99,12 @@ export class PoseTeleopController {
   private previousArmPressed = false;
   private previousReanchorPressed = false;
   private lastPublishedAt = Number.NEGATIVE_INFINITY;
+  private moving = false;
 
   constructor(options: PoseTeleopControllerOptions) {
     this.ros = options.ros;
     this.onArmedChange = options.onArmedChange;
+    this.onMotionChange = options.onMotionChange;
     this.onPublishError = options.onPublishError;
   }
 
@@ -126,14 +130,20 @@ export class PoseTeleopController {
 
     if (!input.pose) {
       this.previousControllerPose = null;
+      this.setMoving(false);
       return;
     }
 
     const previous = this.previousControllerPose;
     this.previousControllerPose = cloneControllerPose(input.pose);
-    if (!previous || !this.armed || !this.targetPose) return;
+    if (!previous || !this.armed || !this.targetPose) {
+      this.setMoving(false);
+      return;
+    }
 
-    if (input.squeeze >= SQUEEZE_THRESHOLD) this.applyControllerDelta(previous, input.pose);
+    const clutchHeld = input.squeeze >= SQUEEZE_THRESHOLD;
+    this.setMoving(clutchHeld);
+    if (clutchHeld) this.applyControllerDelta(previous, input.pose);
     this.publishIfDue(now);
   }
 
@@ -143,6 +153,7 @@ export class PoseTeleopController {
     this.previousControllerPose = null;
     this.previousArmPressed = false;
     this.previousReanchorPressed = false;
+    this.setMoving(false);
     if (wasArmed) this.onArmedChange?.(false);
   }
 
@@ -218,6 +229,12 @@ export class PoseTeleopController {
         message: message as RoboBoyJsonObject,
       })
       .catch((error: unknown) => this.onPublishError?.(error));
+  }
+
+  private setMoving(moving: boolean): void {
+    if (moving === this.moving) return;
+    this.moving = moving;
+    this.onMotionChange?.(moving);
   }
 }
 

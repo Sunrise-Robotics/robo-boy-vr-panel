@@ -63,3 +63,17 @@ test('disarming stops pose publications', () => {
   controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 120);
   assert.equal(published.length, 1);
 });
+
+test('reports motion only while armed with the squeeze clutch held', () => {
+  const motion: boolean[] = [];
+  const controller = new PoseTeleopController({
+    ros: { publish: async () => {} } as any,
+    onMotionChange: (moving) => motion.push(moving),
+  });
+  controller.setTargetTopic('/robot_a/teleop_target_pose');
+  controller.setRobotPose(robotPose as any);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, reanchorPressed: false }, 0);
+  controller.update({ pose: controllerPose(0), squeeze: 1, armPressed: false, reanchorPressed: false }, 40);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 80);
+  assert.deepEqual(motion, [true, false]);
+});

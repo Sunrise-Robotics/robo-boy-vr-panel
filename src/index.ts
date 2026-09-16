@@ -25,7 +25,6 @@ const PANEL_ID = 'co.sunriserobotics.roboboy.vr';
 const FLANGE_POSE_SUFFIX = '/flange_pose';
 const TARGET_POSE_SUFFIX = '/teleop_target_pose';
 const POSE_STAMPED_TYPE = 'geometry_msgs/msg/PoseStamped';
-const ROBOT_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 const PANEL_MARKUP = `
 <div class="rb-vr">
@@ -35,9 +34,13 @@ const PANEL_MARKUP = `
     .rb-vr button:disabled { opacity: .5; cursor: default; }
     .rb-vr [data-role="status"] { color: var(--text-secondary, #aaa); font-size: .85rem; white-space: pre-line; }
     .rb-vr [data-role="robot"] { display: flex; align-items: center; gap: .4rem; font-size: .9rem; }
-    .rb-vr [data-role="robot"] input { min-width: 0; flex: 1; font: inherit; padding: .35rem; }
+    .rb-vr [data-role="robot"] select { min-width: 0; flex: 1; font: inherit; padding: .35rem; }
     .rb-vr [data-role="armed"] { font-weight: 600; }
     .rb-vr [data-role="armed"][data-armed="true"] { color: var(--success-color, #4caf50); }
+    .rb-vr [data-role="motion"] { display: flex; align-items: center; gap: .4rem; font-weight: 600; color: #dd6b6b; }
+    .rb-vr [data-role="motion"][data-moving="true"] { color: var(--success-color, #4caf50); }
+    .rb-vr [data-role="motion-light"] { width: .7rem; height: .7rem; border-radius: 50%; background: #b62222; }
+    .rb-vr [data-role="motion"][data-moving="true"] [data-role="motion-light"] { background: #25b84b; }
     .rb-vr [data-role="cameras"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .35rem .75rem; }
     .rb-vr [data-role="cameras"] label { display: flex; align-items: center; gap: .4rem; font-size: .9rem; }
     .rb-vr [data-role="previews"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .5rem; }
@@ -46,9 +49,9 @@ const PANEL_MARKUP = `
   <button data-action="enter" disabled>Enter VR</button>
   <div data-role="status">Discovering camera streams…</div>
   <div data-role="cameras" aria-label="Camera streams"></div>
-  <label data-role="robot">Robot namespace <input data-role="robot-name" value="robot_big" autocomplete="off" /></label>
-  <button data-action="robot">Use robot</button>
+  <label data-role="robot">Robot <select data-role="robot-name"><option value="robot_small">robot_small</option><option value="robot_big">robot_big</option></select></label>
   <div data-role="armed" data-armed="false">Pose control disarmed</div>
+  <div data-role="motion" data-moving="false"><span data-role="motion-light"></span><span data-role="motion-text">Motion idle</span></div>
   <div data-role="previews"></div>
   <div data-role="canvas-host"></div>
 </div>
@@ -84,6 +87,15 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       el.dataset.armed = String(armed);
       el.textContent = armed ? 'Pose control armed — hold right squeeze to move' : 'Pose control disarmed';
     },
+    onMotionChange: (moving) => {
+      const el = root?.querySelector<HTMLElement>('[data-role="motion"]');
+      if (el) {
+        el.dataset.moving = String(moving);
+        const text = el.querySelector<HTMLElement>('[data-role="motion-text"]');
+        if (text) text.textContent = moving ? 'Motion enabled' : 'Motion idle';
+      }
+      vrScene?.setMotionActive(moving);
+    },
     onPublishError: (error) => logger.warn('Unable to publish the pose target.', error),
   });
 
@@ -98,12 +110,8 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
   };
 
   const configureRobot = async () => {
-    const nameInput = root?.querySelector<HTMLInputElement>('[data-role="robot-name"]');
-    const robotName = nameInput?.value.trim() ?? '';
-    if (!ROBOT_NAME_PATTERN.test(robotName)) {
-      setStatus('Robot namespace may use only letters, numbers, underscores, and hyphens.');
-      return;
-    }
+    const nameInput = root?.querySelector<HTMLSelectElement>('[data-role="robot-name"]');
+    const robotName = nameInput?.value ?? 'robot_small';
 
     const generation = ++robotSubscriptionGeneration;
     poseTeleopController.setTargetTopic(`/${robotName}${TARGET_POSE_SUFFIX}`);
@@ -313,16 +321,14 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
 
       root.addEventListener('click', (event) => {
         const action = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-action]')?.dataset.action : undefined;
-        if (action === 'robot') {
-          void configureRobot();
-          return;
-        }
         if (action !== 'enter') return;
         void vrScene
           ?.enter()
           .then(() => setStatus('In VR: A arms pose control, B re-anchors, and right squeeze is the clutch.'))
           .catch((error) => setStatus(`Entering VR failed: ${error instanceof Error ? error.message : String(error)}`));
       });
+
+      root.querySelector<HTMLSelectElement>('[data-role="robot-name"]')?.addEventListener('change', () => void configureRobot());
 
       void configureRobot();
       void refreshStreams();
