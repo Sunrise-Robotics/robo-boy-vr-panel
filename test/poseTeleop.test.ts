@@ -77,3 +77,20 @@ test('reports motion only while armed with the squeeze clutch held', () => {
   controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 80);
   assert.deepEqual(motion, [true, false]);
 });
+
+test('disarms and reports a rejected pose publish', async () => {
+  const errors: unknown[] = [];
+  const armed: boolean[] = [];
+  const controller = new PoseTeleopController({
+    ros: { publish: async () => Promise.reject(new Error('publish denied')) } as any,
+    onArmedChange: (value) => armed.push(value),
+    onPublishError: (error) => errors.push(error),
+  });
+  controller.setTargetTopic('/robot_a/teleop_target_pose');
+  controller.setRobotPose(robotPose as any);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, reanchorPressed: false }, 0);
+  controller.update({ pose: controllerPose(0), squeeze: 1, armPressed: false, reanchorPressed: false }, 40);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((errors[0] as Error).message, 'publish denied');
+  assert.deepEqual(armed, [true, false]);
+});

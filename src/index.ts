@@ -96,7 +96,10 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       }
       vrScene?.setMotionActive(moving);
     },
-    onPublishError: (error) => logger.warn('Unable to publish the pose target.', error),
+    onPublishError: (error) => {
+      logger.warn('Unable to publish the pose target.', error);
+      setStatus(`Pose target publish failed: ${error instanceof Error ? error.message : String(error)}`);
+    },
   });
 
   const setStatus = (text: string) => {

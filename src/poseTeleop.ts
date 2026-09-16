@@ -228,7 +228,10 @@ export class PoseTeleopController {
         messageType: 'geometry_msgs/msg/PoseStamped',
         message: message as RoboBoyJsonObject,
       })
-      .catch((error: unknown) => this.onPublishError?.(error));
+      .catch((error: unknown) => {
+        this.onPublishError?.(error);
+        this.stop();
+      });
   }
 
   private setMoving(moving: boolean): void {
