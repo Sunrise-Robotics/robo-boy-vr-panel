@@ -52,6 +52,27 @@ test('moves only while the squeeze clutch is held and holds its final target on 
   assert.equal(published[2].message.pose.position.y, 1.98);
 });
 
+test('applies configured deadzone and sensitivity to controller translation', () => {
+  const published: any[] = [];
+  const controller = new PoseTeleopController({ ros: { publish: async (options: unknown) => void published.push(options) } as any });
+  controller.setTargetTopic('/robot_a/teleop_target_pose');
+  controller.setMotionSettings({
+    translationDeadzoneM: 0.003,
+    rotationDeadzoneRad: 0,
+    translationSensitivity: 0.5,
+    rotationSensitivity: 1,
+    squeezeThreshold: 0.5,
+  });
+  controller.setRobotPose(robotPose as any);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, reanchorPressed: false }, 0);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 40);
+  controller.update({ pose: controllerPose(0.002), squeeze: 1, armPressed: false, reanchorPressed: false }, 80);
+  controller.update({ pose: controllerPose(0.004), squeeze: 1, armPressed: false, reanchorPressed: false }, 120);
+
+  assert.equal(published.length, 3);
+  assert.equal(published[2].message.pose.position.y, 1.998);
+});
+
 test('disarming stops pose publications', () => {
   const published: unknown[] = [];
   const controller = new PoseTeleopController({ ros: { publish: async (options: unknown) => void published.push(options) } as any });

@@ -18,7 +18,9 @@ It is a port of two things that already worked:
 the right controller's **grip pose** produces a 6-DoF Cartesian target, gated
 by its squeeze clutch. It subscribes to `/{robot}/flange_pose` to initialize
 and re-anchor, then publishes `geometry_msgs/msg/PoseStamped` to
-`/{robot}/teleop_target_pose` at 30 Hz through Robo-Boy's brokered ROS API.
+`/{robot}/teleop_target_pose` at 30 Hz through Robo-Boy's brokered ROS API. The
+default target can be changed to any absolute ROS topic; messages always use
+`geometry_msgs/msg/PoseStamped`.
 There is deliberately no robot-side consumer in this repository yet, so these
 messages alone cannot cause robot motion.
 
@@ -42,8 +44,10 @@ fork until it's merged upstream.
 - **Grip (either controller)**: grab a floating camera panel to reposition
   it; release to let it settle and face you again.
 - **Trigger, pointed at "Exit VR"**: leaves the immersive session.
-- **Robot dropdown**: switches immediately between `robot_small` and
-  `robot_big`. The panel listens to `/{robot}/flange_pose` and targets
+- **Settings**: choose the robot namespace, the `PoseStamped` publish topic,
+  translation and rotation deadzones, translation and rotation sensitivity,
+  and the squeeze threshold. The robot namespace controls the flange-pose
+  source at `/{robot}/flange_pose`; the default target is
   `/{robot}/teleop_target_pose`.
 - **Right A**: arm or disarm pose publishing. Arming re-anchors to the latest
   flange pose first.
@@ -108,6 +112,18 @@ Disarming, controller loss, VR exit, panel deactivation, and unmount stop
 publishing immediately. Releasing the squeeze does not disarm: it holds the
 last target while the session remains armed.
 
+## Panel settings
+
+Settings are saved for this workspace tile. Camera choices are also retained;
+on a fresh tile, the first two discovered streams are selected. Applying pose
+settings disarms teleoperation and reconnects the flange-pose subscription, so
+the operator must wait for a current pose and arm again.
+
+The pose target is intentionally an ordinary topic field, like the D-pad
+publisher. It must be an absolute ROS name and receives
+`geometry_msgs/msg/PoseStamped`; configure a compatible consumer on the robot
+side before arming.
+
 ## Development
 
 ```
@@ -128,5 +144,3 @@ See Robo-Boy's `docs/custom-panels.md` for how to stage this panel locally
 - No HLS fallback for webviews without `RTCPeerConnection` (the reference
   WebRTC panel has one). Quest Browser has full WebRTC support, so this
   wasn't needed for the first working version.
-- No camera-toggle UI -- every discovered stream (up to 5) connects
-  automatically.

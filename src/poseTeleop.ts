@@ -35,9 +35,24 @@ export interface PoseTeleopControllerOptions {
 }
 
 const PUBLISH_INTERVAL_MS = 1000 / 30;
-const SQUEEZE_THRESHOLD = 0.5;
 const MAX_TRANSLATION_DELTA_M = 0.05;
 const MAX_ROTATION_DELTA_RAD = Math.PI / 9;
+
+export interface PoseTeleopMotionSettings {
+  translationDeadzoneM: number;
+  rotationDeadzoneRad: number;
+  translationSensitivity: number;
+  rotationSensitivity: number;
+  squeezeThreshold: number;
+}
+
+export const DEFAULT_POSE_TELEOP_MOTION_SETTINGS: PoseTeleopMotionSettings = {
+  translationDeadzoneM: 0.003,
+  rotationDeadzoneRad: THREE.MathUtils.degToRad(1),
+  translationSensitivity: 1,
+  rotationSensitivity: 1,
+  squeezeThreshold: 0.5,
+};
 
 // WebXR local space is right/up/back. The robot pose path this follows is X-forward, Y-left,
 // Z-up, matching the OpenXR-to-USD basis used by ai_policy_stack's Quest teleop.
@@ -100,6 +115,9 @@ export class PoseTeleopController {
   private previousReanchorPressed = false;
   private lastPublishedAt = Number.NEGATIVE_INFINITY;
   private moving = false;
+  private motionSettings: PoseTeleopMotionSettings = { ...DEFAULT_POSE_TELEOP_MOTION_SETTINGS };
+  private pendingTranslation = new THREE.Vector3();
+  private pendingRotation = new THREE.Quaternion();
 
   constructor(options: PoseTeleopControllerOptions) {
     this.ros = options.ros;
@@ -113,6 +131,11 @@ export class PoseTeleopController {
     this.targetTopic = topic;
     this.latestRobotPose = null;
     this.targetPose = null;
+  }
+
+  setMotionSettings(settings: PoseTeleopMotionSettings): void {
+    this.motionSettings = { ...settings };
+    this.clearPendingMotion();
   }
 
   setRobotPose(message: RoboBoyJsonObject): boolean {
@@ -130,6 +153,7 @@ export class PoseTeleopController {
 
     if (!input.pose) {
       this.previousControllerPose = null;
+      this.clearPendingMotion();
       this.setMoving(false);
       return;
     }
@@ -141,9 +165,10 @@ export class PoseTeleopController {
       return;
     }
 
-    const clutchHeld = input.squeeze >= SQUEEZE_THRESHOLD;
+    const clutchHeld = input.squeeze >= this.motionSettings.squeezeThreshold;
     this.setMoving(clutchHeld);
     if (clutchHeld) this.applyControllerDelta(previous, input.pose);
+    else this.clearPendingMotion();
     this.publishIfDue(now);
   }
 
@@ -153,6 +178,7 @@ export class PoseTeleopController {
     this.previousControllerPose = null;
     this.previousArmPressed = false;
     this.previousReanchorPressed = false;
+    this.clearPendingMotion();
     this.setMoving(false);
     if (wasArmed) this.onArmedChange?.(false);
   }
@@ -178,25 +204,40 @@ export class PoseTeleopController {
   private applyControllerDelta(previous: ControllerPose, current: ControllerPose): void {
     if (!this.targetPose) return;
 
-    const translation = current.position.clone().sub(previous.position);
-    if (translation.length() > MAX_TRANSLATION_DELTA_M) translation.setLength(MAX_TRANSLATION_DELTA_M);
-    translation.applyMatrix4(WEBXR_TO_ROBOT);
-    this.targetPose.position.add(translation);
+    this.pendingTranslation.add(current.position.clone().sub(previous.position));
+    if (this.pendingTranslation.length() >= this.motionSettings.translationDeadzoneM) {
+      const translation = this.pendingTranslation.multiplyScalar(this.motionSettings.translationSensitivity);
+      this.pendingTranslation = new THREE.Vector3();
+      if (translation.length() > MAX_TRANSLATION_DELTA_M) translation.setLength(MAX_TRANSLATION_DELTA_M);
+      translation.applyMatrix4(WEBXR_TO_ROBOT);
+      this.targetPose.position.add(translation);
+    }
 
     const delta = current.orientation.clone().multiply(previous.orientation.clone().invert()).normalize();
-    const angle = 2 * Math.acos(THREE.MathUtils.clamp(delta.w, -1, 1));
-    if (angle > MAX_ROTATION_DELTA_RAD) {
-      const axisLength = Math.hypot(delta.x, delta.y, delta.z);
+    this.pendingRotation.premultiply(delta).normalize();
+    const pendingAngle = 2 * Math.acos(THREE.MathUtils.clamp(this.pendingRotation.w, -1, 1));
+    if (pendingAngle >= this.motionSettings.rotationDeadzoneRad) {
+      const axisLength = Math.hypot(this.pendingRotation.x, this.pendingRotation.y, this.pendingRotation.z);
       if (axisLength > Number.EPSILON) {
-        delta.setFromAxisAngle(new THREE.Vector3(delta.x, delta.y, delta.z).multiplyScalar(1 / axisLength), MAX_ROTATION_DELTA_RAD);
+        const angle = Math.min(pendingAngle * this.motionSettings.rotationSensitivity, MAX_ROTATION_DELTA_RAD);
+        delta.setFromAxisAngle(
+          new THREE.Vector3(this.pendingRotation.x, this.pendingRotation.y, this.pendingRotation.z).multiplyScalar(1 / axisLength),
+          angle,
+        );
+        this.pendingRotation = new THREE.Quaternion();
+        const robotDelta = WEBXR_TO_ROBOT_ROTATION
+          .clone()
+          .multiply(delta)
+          .multiply(ROBOT_TO_WEBXR_ROTATION)
+          .normalize();
+        this.targetPose.orientation.premultiply(robotDelta).normalize();
       }
     }
-    const robotDelta = WEBXR_TO_ROBOT_ROTATION
-      .clone()
-      .multiply(delta)
-      .multiply(ROBOT_TO_WEBXR_ROTATION)
-      .normalize();
-    this.targetPose.orientation.premultiply(robotDelta).normalize();
+  }
+
+  private clearPendingMotion(): void {
+    this.pendingTranslation.set(0, 0, 0);
+    this.pendingRotation.identity();
   }
 
   private publishIfDue(now: number): void {

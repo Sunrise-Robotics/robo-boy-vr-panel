@@ -1,4 +1,5 @@
 import type {
+  RoboBoyJsonValue,
   RoboBoyPanelContext,
   RoboBoyPanelDefinition,
   RoboBoyPanelInstance,
@@ -16,6 +17,15 @@ import {
 import { VrScene } from './vrScene';
 import { PoseTeleopController } from './poseTeleop';
 import {
+  DEFAULT_PANEL_SETTINGS,
+  flangePoseTopicForRobot,
+  isRosTopic,
+  isRobotName,
+  panelSettingsToJson,
+  parsePanelSettings,
+  type PanelSettings,
+} from './panelSettings';
+import {
   canSelectStream,
   defaultSelectedStreamNames,
   MAX_SELECTED_STREAMS,
@@ -23,35 +33,64 @@ import {
 
 const PANEL_ID = 'co.sunriserobotics.roboboy.vr';
 const FLANGE_POSE_SUFFIX = '/flange_pose';
-const TARGET_POSE_SUFFIX = '/teleop_target_pose';
 const POSE_STAMPED_TYPE = 'geometry_msgs/msg/PoseStamped';
 
 const PANEL_MARKUP = `
 <div class="rb-vr">
   <style>
-    .rb-vr { display: flex; flex-direction: column; gap: .5rem; padding: .75rem; height: 100%; box-sizing: border-box; font-family: var(--font-family-ui, system-ui, sans-serif); color: var(--text-color, #eee); }
+    .rb-vr { display: flex; flex-direction: column; gap: .6rem; padding: .75rem; height: 100%; overflow: auto; box-sizing: border-box; font-family: var(--font-family-ui, system-ui, sans-serif); color: var(--text-color, #eee); }
     .rb-vr button { font: inherit; padding: .5rem 1rem; border-radius: .4rem; border: 1px solid var(--border-color, #444); background: var(--primary-color, #2a6fb0); color: var(--button-text-color, #fff); cursor: pointer; }
     .rb-vr button:disabled { opacity: .5; cursor: default; }
+    .rb-vr [data-role="actions"] { display: flex; gap: .5rem; flex-wrap: wrap; }
+    .rb-vr [data-action="settings"], .rb-vr [data-action="settings-cancel"] { background: var(--secondary-color, transparent); color: var(--text-color, #eee); }
     .rb-vr [data-role="status"] { color: var(--text-secondary, #aaa); font-size: .85rem; white-space: pre-line; }
-    .rb-vr [data-role="robot"] { display: flex; align-items: center; gap: .4rem; font-size: .9rem; }
-    .rb-vr [data-role="robot"] select { min-width: 0; flex: 1; font: inherit; padding: .35rem; }
     .rb-vr [data-role="armed"] { font-weight: 600; }
     .rb-vr [data-role="armed"][data-armed="true"] { color: var(--success-color, #4caf50); }
-    .rb-vr [data-role="motion"] { display: flex; align-items: center; gap: .4rem; font-weight: 600; color: #dd6b6b; }
+    .rb-vr [data-role="motion"] { display: flex; align-items: center; gap: .4rem; font-weight: 600; color: var(--error-color, #dd6b6b); }
     .rb-vr [data-role="motion"][data-moving="true"] { color: var(--success-color, #4caf50); }
-    .rb-vr [data-role="motion-light"] { width: .7rem; height: .7rem; border-radius: 50%; background: #b62222; }
-    .rb-vr [data-role="motion"][data-moving="true"] [data-role="motion-light"] { background: #25b84b; }
+    .rb-vr [data-role="motion-light"] { width: .7rem; height: .7rem; border-radius: 50%; background: var(--error-color, #b62222); }
+    .rb-vr [data-role="motion"][data-moving="true"] [data-role="motion-light"] { background: var(--success-color, #25b84b); }
     .rb-vr [data-role="cameras"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .35rem .75rem; }
     .rb-vr [data-role="cameras"] label { display: flex; align-items: center; gap: .4rem; font-size: .9rem; }
     .rb-vr [data-role="previews"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .5rem; }
     .rb-vr [data-role="previews"] video { width: 100%; background: #000; border-radius: .25rem; }
+    .rb-vr [data-role="settings"] { display: grid; gap: .75rem; padding: .75rem; border: 1px solid var(--card-border, var(--border-color, #444)); border-radius: .5rem; background: var(--card-bg, transparent); }
+    .rb-vr [data-role="settings"] fieldset { display: grid; gap: .6rem; min-width: 0; margin: 0; padding: .7rem; border: 1px solid var(--border-color, #444); border-radius: .4rem; }
+    .rb-vr [data-role="settings"] legend { padding: 0 .25rem; font-weight: 600; }
+    .rb-vr [data-role="settings"] label { display: grid; gap: .25rem; font-size: .85rem; }
+    .rb-vr [data-role="settings"] input { min-width: 0; box-sizing: border-box; font: inherit; }
+    .rb-vr [data-role="settings"] input[type="text"] { width: 100%; padding: .4rem; }
+    .rb-vr [data-role="setting-value"] { color: var(--text-secondary, #aaa); font-size: .8rem; }
+    .rb-vr [data-role="settings-error"] { min-height: 1.2rem; color: var(--error-color, #dd6b6b); font-size: .85rem; }
+    .rb-vr [data-role="settings-actions"] { display: flex; gap: .5rem; justify-content: flex-end; }
+    .rb-vr details { border-top: 1px solid var(--border-color, #444); padding-top: .6rem; font-size: .85rem; }
+    .rb-vr details ul { display: grid; gap: .35rem; margin: .5rem 0 0; padding-left: 1.2rem; }
   </style>
-  <button data-action="enter" disabled>Enter VR</button>
+  <div data-role="actions"><button data-action="enter" disabled>Enter VR</button><button data-action="settings" aria-expanded="false">Settings</button></div>
   <div data-role="status">Discovering camera streams…</div>
+  <form data-role="settings" hidden>
+    <fieldset>
+      <legend>Robot and ROS</legend>
+      <label>Robot namespace<input data-setting="robot-name" type="text" list="rb-vr-robot-names" required pattern="[A-Za-z0-9][A-Za-z0-9_-]*" /></label>
+      <datalist id="rb-vr-robot-names"><option value="robot_small"></option><option value="robot_big"></option></datalist>
+      <label>Pose target topic<input data-setting="target-topic" type="text" required /></label>
+      <span data-role="setting-value">Publishes <code>geometry_msgs/msg/PoseStamped</code>. The source pose remains <code data-role="flange-topic"></code>.</span>
+    </fieldset>
+    <fieldset>
+      <legend>Motion tuning</legend>
+      <label>Translation deadzone <span data-role="translation-deadzone-value"></span><input data-setting="translation-deadzone" type="range" min="0" max="0.03" step="0.001" /></label>
+      <label>Rotation deadzone <span data-role="rotation-deadzone-value"></span><input data-setting="rotation-deadzone" type="range" min="0" max="10" step="0.5" /></label>
+      <label>Translation sensitivity <span data-role="translation-sensitivity-value"></span><input data-setting="translation-sensitivity" type="range" min="0.25" max="2" step="0.05" /></label>
+      <label>Rotation sensitivity <span data-role="rotation-sensitivity-value"></span><input data-setting="rotation-sensitivity" type="range" min="0.25" max="2" step="0.05" /></label>
+      <label>Clutch threshold <span data-role="squeeze-threshold-value"></span><input data-setting="squeeze-threshold" type="range" min="0.1" max="0.9" step="0.05" /></label>
+    </fieldset>
+    <div data-role="settings-error" role="alert"></div>
+    <div data-role="settings-actions"><button type="button" data-action="settings-cancel">Cancel</button><button type="submit">Save settings</button></div>
+  </form>
   <div data-role="cameras" aria-label="Camera streams"></div>
-  <label data-role="robot">Robot <select data-role="robot-name"><option value="robot_small">robot_small</option><option value="robot_big">robot_big</option></select></label>
   <div data-role="armed" data-armed="false">Pose control disarmed</div>
   <div data-role="motion" data-moving="false"><span data-role="motion-light"></span><span data-role="motion-text">Motion idle</span></div>
+  <details><summary>VR controls</summary><ul><li>Trigger at a camera name toggles that stream.</li><li>Grip either controller to grab and reposition a camera panel.</li><li>Right A arms or disarms pose publishing; it re-anchors when arming.</li><li>Right B re-anchors to the latest flange pose.</li><li>Hold the right squeeze as a clutch to move the pose target; release holds it.</li><li>Trigger at Exit VR leaves the headset session.</li></ul></details>
   <div data-role="previews"></div>
   <div data-role="canvas-host"></div>
 </div>
@@ -72,6 +111,10 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
   let vrScene: VrScene | null = null;
   let discoveredStreams: GatewayStream[] = [];
   let hasInitialSelection = false;
+  let settings: PanelSettings = parsePanelSettings(
+    context.storage?.get<RoboBoyJsonValue>('settings', panelSettingsToJson(DEFAULT_PANEL_SETTINGS))
+      ?? panelSettingsToJson(DEFAULT_PANEL_SETTINGS),
+  );
   const selectedStreamNames = new Set<string>();
   const connections = new Map<string, WhepConnection>();
   const connectionControllers = new Map<string, AbortController>();
@@ -101,6 +144,7 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       setStatus(`Pose target publish failed: ${error instanceof Error ? error.message : String(error)}`);
     },
   });
+  poseTeleopController.setMotionSettings(settings.motion);
 
   const setStatus = (text: string) => {
     const el = root?.querySelector<HTMLElement>('[data-role="status"]');
@@ -112,12 +156,74 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
     if (button) button.disabled = connections.size === 0;
   };
 
+  const saveSettings = () => {
+    if (!context.storage) return;
+    try {
+      context.storage.set('settings', panelSettingsToJson(settings));
+    } catch (error) {
+      logger.warn('Unable to save VR panel settings.', error);
+      setStatus('Settings could not be saved, but remain active until this panel closes.');
+    }
+  };
+
+  const setSettingsFormValues = () => {
+    const settingsForm = root?.querySelector<HTMLFormElement>('[data-role="settings"]');
+    if (!settingsForm) return;
+    const setValue = (selector: string, value: string) => {
+      const input = settingsForm.querySelector<HTMLInputElement>(selector);
+      if (input) input.value = value;
+    };
+    setValue('[data-setting="robot-name"]', settings.robotName);
+    setValue('[data-setting="target-topic"]', settings.targetPoseTopic);
+    setValue('[data-setting="translation-deadzone"]', String(settings.motion.translationDeadzoneM));
+    setValue('[data-setting="rotation-deadzone"]', String(settings.motion.rotationDeadzoneRad * 180 / Math.PI));
+    setValue('[data-setting="translation-sensitivity"]', String(settings.motion.translationSensitivity));
+    setValue('[data-setting="rotation-sensitivity"]', String(settings.motion.rotationSensitivity));
+    setValue('[data-setting="squeeze-threshold"]', String(settings.motion.squeezeThreshold));
+    const flangeTopic = settingsForm.querySelector<HTMLElement>('[data-role="flange-topic"]');
+    if (flangeTopic) flangeTopic.textContent = flangePoseTopicForRobot(settings.robotName);
+    const robotNameInput = settingsForm.querySelector<HTMLInputElement>('[data-setting="robot-name"]');
+    if (robotNameInput) {
+      robotNameInput.oninput = () => {
+        if (flangeTopic && isRobotName(robotNameInput.value.trim())) {
+          flangeTopic.textContent = flangePoseTopicForRobot(robotNameInput.value.trim());
+        }
+      };
+    }
+    const updateValues = () => {
+      const values: Array<[string, string, (value: number) => string]> = [
+        ['translation-deadzone', 'translation-deadzone-value', (value) => `${(value * 1000).toFixed(0)} mm`],
+        ['rotation-deadzone', 'rotation-deadzone-value', (value) => `${value.toFixed(1)}°`],
+        ['translation-sensitivity', 'translation-sensitivity-value', (value) => `${value.toFixed(2)}×`],
+        ['rotation-sensitivity', 'rotation-sensitivity-value', (value) => `${value.toFixed(2)}×`],
+        ['squeeze-threshold', 'squeeze-threshold-value', (value) => `${value.toFixed(2)}`],
+      ];
+      for (const [inputName, outputRole, format] of values) {
+        const input = settingsForm.querySelector<HTMLInputElement>(`[data-setting="${inputName}"]`);
+        const output = settingsForm.querySelector<HTMLElement>(`[data-role="${outputRole}"]`);
+        if (input && output) output.textContent = format(Number(input.value));
+      }
+    };
+    settingsForm.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((input) => {
+      input.oninput = updateValues;
+    });
+    updateValues();
+  };
+
+  const setSettingsOpen = (open: boolean) => {
+    const settingsForm = root?.querySelector<HTMLFormElement>('[data-role="settings"]');
+    const settingsButton = root?.querySelector<HTMLButtonElement>('[data-action="settings"]');
+    if (!settingsForm || !settingsButton) return;
+    if (open) setSettingsFormValues();
+    settingsForm.hidden = !open;
+    settingsButton.setAttribute('aria-expanded', String(open));
+  };
+
   const configureRobot = async () => {
-    const nameInput = root?.querySelector<HTMLSelectElement>('[data-role="robot-name"]');
-    const robotName = nameInput?.value ?? 'robot_small';
+    const robotName = settings.robotName;
 
     const generation = ++robotSubscriptionGeneration;
-    poseTeleopController.setTargetTopic(`/${robotName}${TARGET_POSE_SUFFIX}`);
+    poseTeleopController.setTargetTopic(settings.targetPoseTopic);
     const previousSubscription = flangePoseSubscription;
     flangePoseSubscription = null;
     if (previousSubscription) await previousSubscription.unsubscribe().catch((error) => logger.warn('Unable to unsubscribe from the previous flange pose.', error));
@@ -139,10 +245,10 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
         return;
       }
       flangePoseSubscription = subscription;
-      setStatus(`Using ${robotName}. Waiting for ${FLANGE_POSE_SUFFIX}.`);
+      setStatus(`Using ${robotName}. Waiting for ${flangePoseTopicForRobot(robotName)}.`);
     } catch (error) {
       if (generation === robotSubscriptionGeneration) {
-        setStatus(`Unable to subscribe to /${robotName}${FLANGE_POSE_SUFFIX}: ${error instanceof Error ? error.message : String(error)}`);
+        setStatus(`Unable to subscribe to ${flangePoseTopicForRobot(robotName)}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   };
@@ -258,11 +364,15 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
         return;
       }
       selectedStreamNames.add(name);
+      settings.selectedStreamNames = [...selectedStreamNames];
+      saveSettings();
       renderCameraControls();
       void connectStream(stream);
       return;
     }
     selectedStreamNames.delete(name);
+    settings.selectedStreamNames = [...selectedStreamNames];
+    saveSettings();
     renderCameraControls();
     void disconnectStream(name);
   };
@@ -285,7 +395,11 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       }
       if (!hasInitialSelection && streams.length > 0) {
         hasInitialSelection = true;
-        defaultSelectedStreamNames(streams).forEach((name) => selectedStreamNames.add(name));
+        if (settings.selectedStreamNames === null) {
+          defaultSelectedStreamNames(streams).forEach((name) => selectedStreamNames.add(name));
+          settings.selectedStreamNames = [...selectedStreamNames];
+          saveSettings();
+        }
       }
       renderCameraControls();
       if (streams.length === 0) {
@@ -324,15 +438,61 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
 
       root.addEventListener('click', (event) => {
         const action = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-action]')?.dataset.action : undefined;
-        if (action !== 'enter') return;
-        void vrScene
-          ?.enter()
-          .then(() => setStatus('In VR: A arms pose control, B re-anchors, and right squeeze is the clutch.'))
-          .catch((error) => setStatus(`Entering VR failed: ${error instanceof Error ? error.message : String(error)}`));
+        if (action === 'settings') {
+          setSettingsOpen(true);
+          return;
+        }
+        if (action === 'settings-cancel') {
+          setSettingsOpen(false);
+          return;
+        }
+        if (action === 'enter') {
+          void vrScene
+            ?.enter()
+            .then(() => setStatus('In VR: A arms pose control, B re-anchors, and right squeeze is the clutch.'))
+            .catch((error) => setStatus(`Entering VR failed: ${error instanceof Error ? error.message : String(error)}`));
+        }
       });
 
-      root.querySelector<HTMLSelectElement>('[data-role="robot-name"]')?.addEventListener('change', () => void configureRobot());
+      root.querySelector<HTMLFormElement>('[data-role="settings"]')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const form = event.currentTarget as HTMLFormElement;
+        const value = (setting: string) => form.querySelector<HTMLInputElement>(`[data-setting="${setting}"]`)?.value.trim() ?? '';
+        const robotName = value('robot-name');
+        const targetPoseTopic = value('target-topic');
+        const error = form.querySelector<HTMLElement>('[data-role="settings-error"]');
+        if (!isRobotName(robotName)) {
+          if (error) error.textContent = 'Robot namespace must contain only letters, digits, hyphens, and underscores.';
+          return;
+        }
+        if (!isRosTopic(targetPoseTopic)) {
+          if (error) error.textContent = 'Pose target topic must be an absolute ROS topic name.';
+          return;
+        }
+        settings = parsePanelSettings({
+          version: 1,
+          robotName,
+          targetPoseTopic,
+          selectedStreamNames: settings.selectedStreamNames,
+          motion: {
+            translationDeadzoneM: Number(value('translation-deadzone')),
+            rotationDeadzoneRad: Number(value('rotation-deadzone')) * Math.PI / 180,
+            translationSensitivity: Number(value('translation-sensitivity')),
+            rotationSensitivity: Number(value('rotation-sensitivity')),
+            squeezeThreshold: Number(value('squeeze-threshold')),
+          },
+        });
+        poseTeleopController.stop();
+        poseTeleopController.setMotionSettings(settings.motion);
+        saveSettings();
+        if (error) error.textContent = '';
+        setSettingsOpen(false);
+        void configureRobot();
+        setStatus(`Settings saved. Using ${settings.targetPoseTopic}; arm again after the flange pose arrives.`);
+      });
 
+      selectedStreamNames.clear();
+      settings.selectedStreamNames?.forEach((name) => selectedStreamNames.add(name));
       void configureRobot();
       void refreshStreams();
     },
