@@ -44,7 +44,8 @@ fork until it's merged upstream.
 - **Grip (either controller)**: grab a floating camera panel to reposition
   it; release to let it settle and face you again.
 - **Trigger, pointed at "Exit VR"**: leaves the immersive session.
-- **Settings**: choose the robot namespace, the `PoseStamped` publish topic,
+- **Settings**: choose the robot namespace, the `PoseStamped` publish topic, the
+  published `frame_id` (default `arm_base`; empty passes the flange pose frame through),
   translation and rotation deadzones, translation and rotation sensitivity,
   and the squeeze threshold. The robot namespace controls the flange-pose
   source at `/{robot}/flange_pose`; the default target is

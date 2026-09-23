@@ -107,6 +107,7 @@ export class PoseTeleopController {
   private readonly onMotionChange?: (moving: boolean) => void;
   private readonly onPublishError?: (error: unknown) => void;
   private targetTopic: string | null = null;
+  private targetFrameId = '';
   private latestRobotPose: RobotPose | null = null;
   private targetPose: RobotPose | null = null;
   private previousControllerPose: ControllerPose | null = null;
@@ -131,6 +132,11 @@ export class PoseTeleopController {
     this.targetTopic = topic;
     this.latestRobotPose = null;
     this.targetPose = null;
+  }
+
+  /** Overrides the published frame_id; empty keeps the flange pose's frame_id. */
+  setTargetFrameId(frameId: string): void {
+    this.targetFrameId = frameId;
   }
 
   setMotionSettings(settings: PoseTeleopMotionSettings): void {
@@ -247,7 +253,7 @@ export class PoseTeleopController {
     const message = {
       header: {
         stamp: { sec: Math.floor(stampMs / 1000), nanosec: Math.floor((stampMs % 1000) * 1_000_000) },
-        frame_id: this.targetPose.frameId,
+        frame_id: this.targetFrameId || this.targetPose.frameId,
       },
       pose: {
         position: {

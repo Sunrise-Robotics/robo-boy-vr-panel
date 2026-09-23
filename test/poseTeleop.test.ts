@@ -35,6 +35,11 @@ test('does not publish until armed from a flange pose', () => {
   assert.equal(published[0].topic, '/robot_a/teleop_target_pose');
   assert.equal(published[0].messageType, 'geometry_msgs/msg/PoseStamped');
   assert.deepEqual(published[0].message.pose.position, { x: 1, y: 2, z: 3 });
+  assert.equal(published[0].message.header.frame_id, 'world');
+
+  controller.setTargetFrameId('arm_base');
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 120);
+  assert.equal(published[1].message.header.frame_id, 'arm_base');
 });
 
 test('moves only while the squeeze clutch is held and holds its final target on release', () => {

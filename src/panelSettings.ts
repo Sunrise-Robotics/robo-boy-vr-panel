@@ -8,6 +8,8 @@ export interface PanelSettings {
   version: 1;
   robotName: string;
   targetPoseTopic: string;
+  // Stamped on published targets; empty passes the flange pose's own frame_id through.
+  targetFrameId: string;
   selectedStreamNames: string[] | null;
   motion: PoseTeleopMotionSettings;
 }
@@ -20,6 +22,11 @@ export const targetPoseTopicForRobot = (robotName: string): string =>
 export const flangePoseTopicForRobot = (robotName: string): string =>
   `/${robotName}/flange_pose`;
 
+// The flange pose is robot-base relative; fabrics calls that frame `arm_base` (the robot stamps `base_link`).
+export const DEFAULT_TARGET_FRAME_ID = 'arm_base';
+
+export const isFrameId = (value: string): boolean => /^[A-Za-z0-9_/-]*$/.test(value);
+
 export const isRobotName = (value: string): boolean =>
   /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value);
 
@@ -30,6 +37,7 @@ export const DEFAULT_PANEL_SETTINGS: PanelSettings = {
   version: 1,
   robotName: DEFAULT_ROBOT_NAME,
   targetPoseTopic: targetPoseTopicForRobot(DEFAULT_ROBOT_NAME),
+  targetFrameId: DEFAULT_TARGET_FRAME_ID,
   selectedStreamNames: null,
   motion: { ...DEFAULT_POSE_TELEOP_MOTION_SETTINGS },
 };
@@ -60,6 +68,9 @@ export const parsePanelSettings = (value: RoboBoyJsonValue): PanelSettings => {
     targetPoseTopic: typeof stored.targetPoseTopic === 'string' && isRosTopic(stored.targetPoseTopic)
       ? stored.targetPoseTopic
       : targetPoseTopicForRobot(robotName),
+    targetFrameId: typeof stored.targetFrameId === 'string' && isFrameId(stored.targetFrameId)
+      ? stored.targetFrameId
+      : DEFAULT_TARGET_FRAME_ID,
     selectedStreamNames: stringArray(stored.selectedStreamNames),
     motion: {
       translationDeadzoneM: finiteInRange(motion.translationDeadzoneM, DEFAULT_POSE_TELEOP_MOTION_SETTINGS.translationDeadzoneM, 0, 0.03),
@@ -75,6 +86,7 @@ export const panelSettingsToJson = (settings: PanelSettings): RoboBoyJsonObject 
   version: settings.version,
   robotName: settings.robotName,
   targetPoseTopic: settings.targetPoseTopic,
+  targetFrameId: settings.targetFrameId,
   selectedStreamNames: settings.selectedStreamNames,
   motion: {
     translationDeadzoneM: settings.motion.translationDeadzoneM,

@@ -20,6 +20,7 @@ import {
   DEFAULT_PANEL_SETTINGS,
   flangePoseTopicForRobot,
   isRosTopic,
+  isFrameId,
   isRobotName,
   panelSettingsToJson,
   parsePanelSettings,
@@ -75,6 +76,7 @@ const PANEL_MARKUP = `
       <label>Robot namespace<input data-setting="robot-name" type="text" list="rb-vr-robot-names" required pattern="[A-Za-z0-9][A-Za-z0-9_-]*" /></label>
       <datalist id="rb-vr-robot-names"><option value="robot_small"></option><option value="robot_big"></option></datalist>
       <label>Pose target topic<input data-setting="target-topic" type="text" required /></label>
+      <label>Target frame_id<input data-setting="target-frame" type="text" pattern="[A-Za-z0-9_/\-]*" placeholder="(flange pose frame)" /></label>
       <span data-role="setting-value">Publishes <code>geometry_msgs/msg/PoseStamped</code>. The source pose remains <code data-role="flange-topic"></code>.</span>
     </fieldset>
     <fieldset>
@@ -176,6 +178,7 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
     };
     setValue('[data-setting="robot-name"]', settings.robotName);
     setValue('[data-setting="target-topic"]', settings.targetPoseTopic);
+    setValue('[data-setting="target-frame"]', settings.targetFrameId);
     setValue('[data-setting="translation-deadzone"]', String(settings.motion.translationDeadzoneM));
     setValue('[data-setting="rotation-deadzone"]', String(settings.motion.rotationDeadzoneRad * 180 / Math.PI));
     setValue('[data-setting="translation-sensitivity"]', String(settings.motion.translationSensitivity));
@@ -225,6 +228,7 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
 
     const generation = ++robotSubscriptionGeneration;
     poseTeleopController.setTargetTopic(settings.targetPoseTopic);
+    poseTeleopController.setTargetFrameId(settings.targetFrameId);
     const previousSubscription = flangePoseSubscription;
     flangePoseSubscription = null;
     if (previousSubscription) await previousSubscription.unsubscribe().catch((error) => logger.warn('Unable to unsubscribe from the previous flange pose.', error));
@@ -458,6 +462,7 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
         const value = (setting: string) => form.querySelector<HTMLInputElement>(`[data-setting="${setting}"]`)?.value.trim() ?? '';
         const robotName = value('robot-name');
         const targetPoseTopic = value('target-topic');
+        const targetFrameId = value('target-frame');
         const error = form.querySelector<HTMLElement>('[data-role="settings-error"]');
         if (!isRobotName(robotName)) {
           if (error) error.textContent = 'Robot namespace must contain only letters, digits, hyphens, and underscores.';
@@ -467,10 +472,15 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
           if (error) error.textContent = 'Pose target topic must be an absolute ROS topic name.';
           return;
         }
+        if (!isFrameId(targetFrameId)) {
+          if (error) error.textContent = 'Target frame_id may contain only letters, digits, underscores, hyphens, and slashes.';
+          return;
+        }
         settings = parsePanelSettings({
           version: 1,
           robotName,
           targetPoseTopic,
+          targetFrameId,
           selectedStreamNames: settings.selectedStreamNames,
           motion: {
             translationDeadzoneM: Number(value('translation-deadzone')),
