@@ -437,22 +437,19 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       });
       vrScene.mountCanvas(root.querySelector('[data-role="canvas-host"]')!);
 
-      root.addEventListener('click', (event) => {
-        const action = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-action]')?.dataset.action : undefined;
-        if (action === 'settings') {
-          setSettingsOpen(true);
-          return;
-        }
-        if (action === 'settings-cancel') {
-          setSettingsOpen(false);
-          return;
-        }
-        if (action === 'enter') {
-          void vrScene
-            ?.enter()
-            .then(() => setStatus('In VR: A arms pose control, B re-anchors, and right squeeze is the clutch.'))
-            .catch((error) => setStatus(`Entering VR failed: ${error instanceof Error ? error.message : String(error)}`));
-        }
+      // ponytail: direct listeners, not delegation; Quest Browser never ran the delegated root handler.
+      const onAction = (action: string, handler: () => void | Promise<void>) =>
+        root!.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)?.addEventListener('click', () => {
+          Promise.resolve()
+            .then(handler)
+            .catch((error) => setStatus(`${action} failed: ${error instanceof Error ? error.message : String(error)}`));
+        });
+      onAction('settings', () => setSettingsOpen(true));
+      onAction('settings-cancel', () => setSettingsOpen(false));
+      onAction('enter', async () => {
+        if (!navigator.xr) throw new Error('WebXR is unavailable in this frame.');
+        await vrScene?.enter();
+        setStatus('In VR: A arms pose control, B re-anchors, and right squeeze is the clutch.');
       });
 
       root.querySelector<HTMLFormElement>('[data-role="settings"]')?.addEventListener('submit', (event) => {

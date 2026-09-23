@@ -3,9 +3,9 @@
   "id": "co.sunriserobotics.roboboy.vr",
   "name": "VR Camera & Pose Teleop",
   "description": "View WHEP camera streams in a headset and publish clutched controller pose targets.",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "entryPoint": "./dist/index.js",
-  "integrity": "sha256-tofLEYbzXWu6h75JFjSNOjmmMjWQOVLuiqud0NJE89A=",
+  "integrity": "sha256-gzot4RS0bjTCbh3BnCB7uWtWNGpFXerGlMOLOyXzb64=",
   "compatibility": {
     "panelApi": "^2.0.0",
     "roboboy": ">=0.8.0-alpha <1.0.0"
