@@ -5,7 +5,7 @@
   "description": "View WHEP camera streams in a headset and publish clutched controller pose targets.",
   "version": "0.3.4",
   "entryPoint": "./dist/index.js",
-  "integrity": "sha256-fyYAOedUR2qrBGXIfR5+RuRbaa/6ajpooAMp7YY0pLw=",
+  "integrity": "sha256-tofLEYbzXWu6h75JFjSNOjmmMjWQOVLuiqud0NJE89A=",
   "compatibility": {
     "panelApi": "^2.0.0",
     "roboboy": ">=0.8.0-alpha <1.0.0"

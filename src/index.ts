@@ -55,6 +55,7 @@ const PANEL_MARKUP = `
     .rb-vr [data-role="previews"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .5rem; }
     .rb-vr [data-role="previews"] video { width: 100%; background: #000; border-radius: .25rem; }
     .rb-vr [data-role="settings"] { display: grid; gap: .75rem; padding: .75rem; border: 1px solid var(--card-border, var(--border-color, #444)); border-radius: .5rem; background: var(--card-bg, transparent); }
+    .rb-vr [data-role="settings"][hidden] { display: none; }
     .rb-vr [data-role="settings"] fieldset { display: grid; gap: .6rem; min-width: 0; margin: 0; padding: .7rem; border: 1px solid var(--border-color, #444); border-radius: .4rem; }
     .rb-vr [data-role="settings"] legend { padding: 0 .25rem; font-weight: 600; }
     .rb-vr [data-role="settings"] label { display: grid; gap: .25rem; font-size: .85rem; }
