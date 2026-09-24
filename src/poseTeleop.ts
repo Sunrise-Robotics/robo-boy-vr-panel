@@ -24,13 +24,17 @@ export interface PoseTeleopInput {
   pose: ControllerPose | null;
   squeeze: number;
   armPressed: boolean;
-  reanchorPressed: boolean;
+  frameTogglePressed: boolean;
 }
+
+/** Like joy_to_cartesian_command: controller translation applies along world axes or the tool's own axes. */
+export type TranslationFrame = 'world' | 'tool';
 
 export interface PoseTeleopControllerOptions {
   ros: RoboBoyPanelRos;
   onArmedChange?(armed: boolean): void;
   onMotionChange?(moving: boolean): void;
+  onFrameChange?(frame: TranslationFrame): void;
   onPublishError?(error: unknown): void;
 }
 
@@ -97,15 +101,15 @@ export const parsePoseStamped = (message: RoboBoyJsonObject): RobotPose | null =
 };
 
 /**
- * Converts right-controller WebXR grip-pose changes into a brokered ROS PoseStamped target.
- * It deliberately has no knowledge of robot actuation: without a ROS consumer for its target
- * topic, these messages cannot move a robot.
+ * Converts one controller's WebXR grip-pose changes into a brokered ROS PoseStamped target.
+ * fabrics consumes it on /{robot}/teleop_command; it has no other knowledge of robot actuation.
  */
 export class PoseTeleopController {
   private readonly ros: RoboBoyPanelRos;
   private readonly onArmedChange?: (armed: boolean) => void;
   private readonly onMotionChange?: (moving: boolean) => void;
   private readonly onPublishError?: (error: unknown) => void;
+  private readonly onFrameChange?: (frame: TranslationFrame) => void;
   private targetTopic: string | null = null;
   private targetFrameId = '';
   private latestRobotPose: RobotPose | null = null;
@@ -113,7 +117,8 @@ export class PoseTeleopController {
   private previousControllerPose: ControllerPose | null = null;
   private armed = false;
   private previousArmPressed = false;
-  private previousReanchorPressed = false;
+  private previousFrameTogglePressed = false;
+  private translationFrame: TranslationFrame = 'world';
   private lastPublishedAt = Number.NEGATIVE_INFINITY;
   private moving = false;
   private motionSettings: PoseTeleopMotionSettings = { ...DEFAULT_POSE_TELEOP_MOTION_SETTINGS };
@@ -125,6 +130,11 @@ export class PoseTeleopController {
     this.onArmedChange = options.onArmedChange;
     this.onMotionChange = options.onMotionChange;
     this.onPublishError = options.onPublishError;
+    this.onFrameChange = options.onFrameChange;
+  }
+
+  get frame(): TranslationFrame {
+    return this.translationFrame;
   }
 
   setTargetTopic(topic: string): void {
@@ -153,9 +163,9 @@ export class PoseTeleopController {
 
   update(input: PoseTeleopInput, now = performance.now()): void {
     if (buttonPressed(input.armPressed, this.previousArmPressed)) this.toggleArmed();
-    if (buttonPressed(input.reanchorPressed, this.previousReanchorPressed)) this.reanchor();
+    if (buttonPressed(input.frameTogglePressed, this.previousFrameTogglePressed)) this.toggleFrame();
     this.previousArmPressed = input.armPressed;
-    this.previousReanchorPressed = input.reanchorPressed;
+    this.previousFrameTogglePressed = input.frameTogglePressed;
 
     if (!input.pose) {
       this.previousControllerPose = null;
@@ -183,7 +193,7 @@ export class PoseTeleopController {
     this.armed = false;
     this.previousControllerPose = null;
     this.previousArmPressed = false;
-    this.previousReanchorPressed = false;
+    this.previousFrameTogglePressed = false;
     this.clearPendingMotion();
     this.setMoving(false);
     if (wasArmed) this.onArmedChange?.(false);
@@ -198,6 +208,12 @@ export class PoseTeleopController {
     this.armed = true;
     this.lastPublishedAt = Number.NEGATIVE_INFINITY;
     this.onArmedChange?.(true);
+  }
+
+  private toggleFrame(): void {
+    this.translationFrame = this.translationFrame === 'world' ? 'tool' : 'world';
+    this.clearPendingMotion();
+    this.onFrameChange?.(this.translationFrame);
   }
 
   private reanchor(): boolean {
@@ -216,6 +232,8 @@ export class PoseTeleopController {
       this.pendingTranslation = new THREE.Vector3();
       if (translation.length() > MAX_TRANSLATION_DELTA_M) translation.setLength(MAX_TRANSLATION_DELTA_M);
       translation.applyMatrix4(WEBXR_TO_ROBOT);
+      // Tool frame: the robot-axis delta is read in the target's own axes (joy_to_cartesian's rotate_vector).
+      if (this.translationFrame === 'tool') translation.applyQuaternion(this.targetPose.orientation);
       this.targetPose.position.add(translation);
     }
 
@@ -298,3 +316,21 @@ const cloneRobotPose = (pose: RobotPose): RobotPose => ({
   position: pose.position.clone(),
   orientation: pose.orientation.clone(),
 });
+
+export const FABRICS_ACTION_TYPE = 'sunrise_ros_msgs/action/ExecutePlannerMotion';
+const HOME_JOINT_TOLERANCE_RAD = 0.01;
+
+/**
+ * An ExecutePlannerMotion joint-target goal for a single-arm fabrics controller, or null when the
+ * robot is not one of fabrics' arms (robot_small / robot_big). cruise_velocity 0 uses fabrics' speed_scale.
+ */
+export const buildHomeGoal = (robotName: string, jointPositions: number[]): RoboBoyJsonObject | null => {
+  const arm = /^robot_(small|big)$/.exec(robotName)?.[1];
+  if (!arm) return null;
+  return {
+    frame: 'arm_base',
+    [`${arm}_joint_target`]: [...jointPositions],
+    [`${arm}_joint_tolerance`]: HOME_JOINT_TOLERANCE_RAD,
+    cruise_velocity: 0,
+  };
+};

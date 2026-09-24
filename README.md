@@ -1,8 +1,9 @@
 # Robo-Boy VR Camera & Pose Teleop Panel
 
 A Robo-Boy external panel that renders WHEP camera streams as floating video
-panels inside a WebXR (`immersive-vr`) session and publishes a clutched
-right-controller pose target while you're in there.
+panels inside a WebXR (`immersive-vr`) session and publishes a clutched pose
+target per controller while you're in there: the left controller drives one
+robot and the right controller another.
 
 It is a port of two things that already worked:
 
@@ -15,14 +16,20 @@ It is a port of two things that already worked:
   Robo-Boy's reference WebRTC panel (MIT-licensed, see `LICENSE`).
 
 `src/poseTeleop.ts` follows the fixed-robot Quest path from `ai_policy_stack`:
-the right controller's **grip pose** produces a 6-DoF Cartesian target, gated
-by its squeeze clutch. It subscribes to `/{robot}/flange_pose` to initialize
-and re-anchor, then publishes `geometry_msgs/msg/PoseStamped` to
-`/{robot}/teleop_target_pose` at 30 Hz through Robo-Boy's brokered ROS API. The
-default target can be changed to any absolute ROS topic; messages always use
-`geometry_msgs/msg/PoseStamped`.
-There is deliberately no robot-side consumer in this repository yet, so these
-messages alone cannot cause robot motion.
+each controller's **grip pose** produces a 6-DoF Cartesian target, gated by
+its squeeze clutch. Per controller it subscribes to `/{robot}/flange_pose` to
+initialize and re-anchor, then publishes `geometry_msgs/msg/PoseStamped` to
+`/{robot}/teleop_command` at 30 Hz through Robo-Boy's brokered ROS API. That is
+the topic fabrics (`sunrise_fabrics_ros`) servoes toward while
+`runtime.teleop_enabled` is set, the same one `joy_to_cartesian_command`
+feeds. Any absolute ROS topic can be configured instead.
+
+**Reset robot** sends that robot a joint-space goal on fabrics'
+`/{robot}/fabrics/execute_planner_motion` action
+(`sunrise_ros_msgs/action/ExecutePlannerMotion`), not a streamed pose. The
+panel first disarms that controller and waits 0.6 s so fabrics' teleop session
+(0.5 s timeout) has ended and cannot pull the arm back to the last streamed
+target when the goal finishes.
 
 ## Requirements
 
@@ -30,7 +37,11 @@ This panel needs a Robo-Boy build that grants the `webxr` capability
 (`xr-spatial-tracking` + `fullscreen` on the panel's sandboxed iframe). That
 change lives in the `vr-panel-webxr-capability` branch of the
 [Sunrise-Robotics/robo-boy](https://github.com/Sunrise-Robotics/robo-boy)
-fork until it's merged upstream.
+fork until it's merged upstream. The same branch adds `ros.sendActionGoal`
+(manifest permission `ros.actions`), which Reset robot uses. Robo-Boy's
+rosbridge must be able to import `sunrise_ros_msgs`, which means mounting a
+built `sunrise_ros_msgs` install at `/overlay_ws/<name>` in the `ros-stack`
+container.
 
 ## Controls
 
@@ -44,21 +55,28 @@ fork until it's merged upstream.
 - **Grip (either controller)**: grab a floating camera panel to reposition
   it; release to let it settle and face you again.
 - **Trigger, pointed at "Exit VR"**: leaves the immersive session.
-- **Settings**: choose the robot namespace, the `PoseStamped` publish topic, the
-  published `frame_id` (default `arm_base`; empty passes the flange pose frame through),
-  translation and rotation deadzones, translation and rotation sensitivity,
-  and the squeeze threshold. The robot namespace controls the flange-pose
-  source at `/{robot}/flange_pose`; the default target is
-  `/{robot}/teleop_target_pose`.
-- **Right A**: arm or disarm pose publishing. Arming re-anchors to the latest
-  flange pose first.
-- **Right B**: re-anchor to the latest flange pose without changing arm state.
-- **Right squeeze (hold)**: clutch. While armed, the grip pose moves and
-  rotates the target; on release the target holds. The right-hand cyan laser
-  is hidden while squeezed and shown while released.
-- **Motion indicator**: red means the clutch is inactive; green means an
-  armed right controller is actively sending pose motion. It appears in the
-  2D panel and as a small VR light.
+- **Settings**: one section per controller (defaults: left `robot_big`,
+  right `robot_small`). Each has the robot namespace, the `PoseStamped`
+  publish topic (default `/{robot}/teleop_command`), the published `frame_id`
+  (default `arm_base`; empty passes the flange pose frame through), the six
+  home joint angles Reset robot sends (default: fabrics'
+  `robot_config.default_joint_pos`), translation and rotation deadzones and
+  sensitivities, and the squeeze threshold. The two controllers must use
+  different robots.
+- **A (right) / X (left)**: arm or disarm that robot. Arming re-anchors to
+  its latest flange pose first.
+- **B (right) / Y (left)**: switch that robot's translation between world
+  (`arm_base`) axes and tool (TCP) axes, as `joy_to_cartesian_command`'s
+  frame toggle does. Rotation is unchanged.
+- **Squeeze (hold)**: clutch for that controller's robot. While armed, the
+  grip pose moves and rotates the target; on release the target holds. That
+  controller's cyan laser is hidden while squeezed.
+- **Reset L / Reset R** (trigger, then again within 3 s to confirm): send that
+  robot to its home joints through fabrics. Also available as buttons in the
+  2D panel. Arming is blocked until the goal finishes.
+- **Status labels**: one per controller, showing robot, WORLD/TCP, and
+  armed state; red while idle, green while that controller is sending
+  motion. They appear in the 2D panel and above the VR controls.
 
 The initial camera layout is relative to seated eye height: camera planes are
 slightly below eye level. The stream/exit controls retain their familiar
@@ -106,7 +124,7 @@ Quest controller → VR panel → laptop /websocket proxy → Robo-Boy on CELL_I
 For pose teleop, that final ROS hop is instead:
 
 ```
-Quest controller → VR panel → laptop /websocket proxy → Robo-Boy on CELL_IP → ROS /{robot}/teleop_target_pose
+Quest controller → VR panel → laptop /websocket proxy → Robo-Boy on CELL_IP → ROS /{robot}/teleop_command → fabrics
 ```
 
 Disarming, controller loss, VR exit, panel deactivation, and unmount stop
@@ -117,8 +135,10 @@ last target while the session remains armed.
 
 Settings are saved for this workspace tile. Camera choices are also retained;
 on a fresh tile, the first two discovered streams are selected. Applying pose
-settings disarms teleoperation and reconnects the flange-pose subscription, so
-the operator must wait for a current pose and arm again.
+settings disarms both controllers and reconnects the flange-pose
+subscriptions, so the operator must wait for current poses and arm again.
+Settings saved by 0.3.x (one right-controller robot) migrate to the right
+controller; a stored `/{robot}/teleop_target_pose` becomes `/{robot}/teleop_command`.
 
 The pose target is intentionally an ordinary topic field, like the D-pad
 publisher. It must be an absolute ROS name and receives
@@ -138,10 +158,8 @@ See Robo-Boy's `docs/custom-panels.md` for how to stage this panel locally
 
 ## What's deliberately not here yet
 
-- No robot-side consumer yet. A later, separately deployed Cartesian controller
-  must validate and apply `/{robot}/teleop_target_pose` for each fixed robot.
 - The WebXR-to-robot axis basis is ported from `ai_policy_stack`; verify axis
-  directions at low limits when that consumer is introduced.
+  directions at low limits on each robot.
 - No HLS fallback for webviews without `RTCPeerConnection` (the reference
   WebRTC panel has one). Quest Browser has full WebRTC support, so this
   wasn't needed for the first working version.

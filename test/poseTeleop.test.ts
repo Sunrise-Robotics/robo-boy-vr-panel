@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as THREE from 'three';
-import { PoseTeleopController, parsePoseStamped } from '../src/poseTeleop.ts';
+import { buildHomeGoal, PoseTeleopController, parsePoseStamped } from '../src/poseTeleop.ts';
 
 const robotPose = {
   header: { frame_id: 'world' },
@@ -25,12 +25,12 @@ test('does not publish until armed from a flange pose', () => {
   const published: any[] = [];
   const controller = new PoseTeleopController({ ros: { publish: async (options: unknown) => void published.push(options) } as any });
   controller.setTargetTopic('/robot_a/teleop_target_pose');
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 0);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, frameTogglePressed: false }, 0);
   assert.equal(published.length, 0);
 
   controller.setRobotPose(robotPose as any);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, reanchorPressed: false }, 40);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 80);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, frameTogglePressed: false }, 40);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, frameTogglePressed: false }, 80);
   assert.equal(published.length, 1);
   assert.equal(published[0].topic, '/robot_a/teleop_target_pose');
   assert.equal(published[0].messageType, 'geometry_msgs/msg/PoseStamped');
@@ -38,7 +38,7 @@ test('does not publish until armed from a flange pose', () => {
   assert.equal(published[0].message.header.frame_id, 'world');
 
   controller.setTargetFrameId('arm_base');
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 120);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, frameTogglePressed: false }, 120);
   assert.equal(published[1].message.header.frame_id, 'arm_base');
 });
 
@@ -47,10 +47,10 @@ test('moves only while the squeeze clutch is held and holds its final target on 
   const controller = new PoseTeleopController({ ros: { publish: async (options: unknown) => void published.push(options) } as any });
   controller.setTargetTopic('/robot_a/teleop_target_pose');
   controller.setRobotPose(robotPose as any);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, reanchorPressed: false }, 0);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 40);
-  controller.update({ pose: controllerPose(0.02), squeeze: 1, armPressed: false, reanchorPressed: false }, 80);
-  controller.update({ pose: controllerPose(0.04), squeeze: 0, armPressed: false, reanchorPressed: false }, 120);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, frameTogglePressed: false }, 0);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, frameTogglePressed: false }, 40);
+  controller.update({ pose: controllerPose(0.02), squeeze: 1, armPressed: false, frameTogglePressed: false }, 80);
+  controller.update({ pose: controllerPose(0.04), squeeze: 0, armPressed: false, frameTogglePressed: false }, 120);
 
   assert.equal(published.length, 3);
   assert.equal(published[1].message.pose.position.y, 1.98); // WebXR +X (right) maps to robot -Y.
@@ -69,10 +69,10 @@ test('applies configured deadzone and sensitivity to controller translation', ()
     squeezeThreshold: 0.5,
   });
   controller.setRobotPose(robotPose as any);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, reanchorPressed: false }, 0);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 40);
-  controller.update({ pose: controllerPose(0.002), squeeze: 1, armPressed: false, reanchorPressed: false }, 80);
-  controller.update({ pose: controllerPose(0.004), squeeze: 1, armPressed: false, reanchorPressed: false }, 120);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, frameTogglePressed: false }, 0);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, frameTogglePressed: false }, 40);
+  controller.update({ pose: controllerPose(0.002), squeeze: 1, armPressed: false, frameTogglePressed: false }, 80);
+  controller.update({ pose: controllerPose(0.004), squeeze: 1, armPressed: false, frameTogglePressed: false }, 120);
 
   assert.equal(published.length, 3);
   assert.equal(published[2].message.pose.position.y, 1.998);
@@ -83,10 +83,10 @@ test('disarming stops pose publications', () => {
   const controller = new PoseTeleopController({ ros: { publish: async (options: unknown) => void published.push(options) } as any });
   controller.setTargetTopic('/robot_a/teleop_target_pose');
   controller.setRobotPose(robotPose as any);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, reanchorPressed: false }, 0);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 40);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, reanchorPressed: false }, 80);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 120);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, frameTogglePressed: false }, 0);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, frameTogglePressed: false }, 40);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, frameTogglePressed: false }, 80);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, frameTogglePressed: false }, 120);
   assert.equal(published.length, 1);
 });
 
@@ -98,9 +98,9 @@ test('reports motion only while armed with the squeeze clutch held', () => {
   });
   controller.setTargetTopic('/robot_a/teleop_target_pose');
   controller.setRobotPose(robotPose as any);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, reanchorPressed: false }, 0);
-  controller.update({ pose: controllerPose(0), squeeze: 1, armPressed: false, reanchorPressed: false }, 40);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, reanchorPressed: false }, 80);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, frameTogglePressed: false }, 0);
+  controller.update({ pose: controllerPose(0), squeeze: 1, armPressed: false, frameTogglePressed: false }, 40);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, frameTogglePressed: false }, 80);
   assert.deepEqual(motion, [true, false]);
 });
 
@@ -114,9 +114,40 @@ test('disarms and reports a rejected pose publish', async () => {
   });
   controller.setTargetTopic('/robot_a/teleop_target_pose');
   controller.setRobotPose(robotPose as any);
-  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, reanchorPressed: false }, 0);
-  controller.update({ pose: controllerPose(0), squeeze: 1, armPressed: false, reanchorPressed: false }, 40);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, frameTogglePressed: false }, 0);
+  controller.update({ pose: controllerPose(0), squeeze: 1, armPressed: false, frameTogglePressed: false }, 40);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal((errors[0] as Error).message, 'publish denied');
   assert.deepEqual(armed, [true, false]);
+});
+
+test('B/Y toggles translation into the tool frame, like joy_to_cartesian', () => {
+  const published: any[] = [];
+  const frames: string[] = [];
+  const controller = new PoseTeleopController({
+    ros: { publish: async (options: unknown) => void published.push(options) } as any,
+    onFrameChange: (frame) => frames.push(frame),
+  });
+  controller.setTargetTopic('/robot_small/teleop_command');
+  // Tool yawed +90° about robot Z: robot -Y (controller right) becomes robot +X in tool axes.
+  controller.setRobotPose({ ...robotPose, pose: { ...robotPose.pose, orientation: { x: 0, y: 0, z: Math.SQRT1_2, w: Math.SQRT1_2 } } } as any);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, frameTogglePressed: false }, 0);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, frameTogglePressed: true }, 40);
+  controller.update({ pose: controllerPose(0.02), squeeze: 1, armPressed: false, frameTogglePressed: true }, 80);
+
+  assert.deepEqual(frames, ['tool']);
+  assert.equal(controller.frame, 'tool');
+  const { x, y } = published.at(-1).message.pose.position;
+  assert.ok(Math.abs(x - 1.02) < 1e-9 && Math.abs(y - 2) < 1e-9, `got ${x}, ${y}`);
+});
+
+test('builds a single-arm fabrics joint goal for known arms only', () => {
+  const home = [1, 2, 3, 4, 5, 6];
+  assert.deepEqual(buildHomeGoal('robot_big', home), {
+    frame: 'arm_base',
+    big_joint_target: home,
+    big_joint_tolerance: 0.01,
+    cruise_velocity: 0,
+  });
+  assert.equal(buildHomeGoal('robot_other', home), null);
 });

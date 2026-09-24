@@ -15,15 +15,19 @@ import {
   type WhepConnection,
 } from './whep';
 import { VrScene } from './vrScene';
-import { PoseTeleopController } from './poseTeleop';
+import { buildHomeGoal, FABRICS_ACTION_TYPE, PoseTeleopController } from './poseTeleop';
 import {
-  DEFAULT_PANEL_SETTINGS,
+  defaultPanelSettings,
+  fabricsActionForRobot,
   flangePoseTopicForRobot,
+  HANDS,
   isRosTopic,
   isFrameId,
   isRobotName,
   panelSettingsToJson,
+  parseHomeJointPositions,
   parsePanelSettings,
+  type Hand,
   type PanelSettings,
 } from './panelSettings';
 import {
@@ -33,8 +37,34 @@ import {
 } from './cameraSelection';
 
 const PANEL_ID = 'co.sunriserobotics.roboboy.vr';
-const FLANGE_POSE_SUFFIX = '/flange_pose';
 const POSE_STAMPED_TYPE = 'geometry_msgs/msg/PoseStamped';
+const HAND_LABEL: Record<Hand, string> = { left: 'Left', right: 'Right' };
+const ARM_BUTTON: Record<Hand, string> = { left: 'X', right: 'A' };
+const FRAME_BUTTON: Record<Hand, string> = { left: 'Y', right: 'B' };
+// A reset moves the robot, so it takes a second press within this window to confirm.
+const RESET_CONFIRM_MS = 3000;
+// Longer than fabrics' runtime.teleop_timeout (0.5 s), so its teleop session has ended before the
+// goal arrives and cannot resume toward the last streamed target once the goal finishes.
+const TELEOP_DRAIN_MS = 600;
+const RESET_TIMEOUT_MS = 120_000;
+
+const armFieldset = (hand: Hand) => `
+    <fieldset>
+      <legend>${HAND_LABEL[hand]} controller</legend>
+      <label>Robot namespace<input data-setting="${hand}-robot-name" type="text" list="rb-vr-robot-names" required pattern="[A-Za-z0-9][A-Za-z0-9_-]*" /></label>
+      <label>Pose target topic<input data-setting="${hand}-target-topic" type="text" required /></label>
+      <label>Target frame_id<input data-setting="${hand}-target-frame" type="text" pattern="[A-Za-z0-9_/\\-]*" placeholder="(flange pose frame)" /></label>
+      <label>Reset home joints (rad, 6 comma-separated)<input data-setting="${hand}-home-joints" type="text" required /></label>
+      <span data-role="setting-value">Publishes <code>geometry_msgs/msg/PoseStamped</code> from <code data-role="${hand}-flange-topic"></code>; reset sends a joint goal to <code data-role="${hand}-action"></code>.</span>
+      <label>Translation deadzone <span data-role="${hand}-translation-deadzone-value"></span><input data-setting="${hand}-translation-deadzone" type="range" min="0" max="0.03" step="0.001" /></label>
+      <label>Rotation deadzone <span data-role="${hand}-rotation-deadzone-value"></span><input data-setting="${hand}-rotation-deadzone" type="range" min="0" max="10" step="0.5" /></label>
+      <label>Translation sensitivity <span data-role="${hand}-translation-sensitivity-value"></span><input data-setting="${hand}-translation-sensitivity" type="range" min="0.25" max="2" step="0.05" /></label>
+      <label>Rotation sensitivity <span data-role="${hand}-rotation-sensitivity-value"></span><input data-setting="${hand}-rotation-sensitivity" type="range" min="0.25" max="2" step="0.05" /></label>
+      <label>Clutch threshold <span data-role="${hand}-squeeze-threshold-value"></span><input data-setting="${hand}-squeeze-threshold" type="range" min="0.1" max="0.9" step="0.05" /></label>
+    </fieldset>`;
+
+const handStatusMarkup = (hand: Hand) => `
+  <div data-role="hand" data-hand="${hand}" data-moving="false"><span data-role="motion-light"></span><span data-role="hand-text"></span><button type="button" data-action="reset-${hand}">Reset robot</button></div>`;
 
 const PANEL_MARKUP = `
 <div class="rb-vr">
@@ -45,12 +75,12 @@ const PANEL_MARKUP = `
     .rb-vr [data-role="actions"] { display: flex; gap: .5rem; flex-wrap: wrap; }
     .rb-vr [data-action="settings"], .rb-vr [data-action="settings-cancel"] { background: var(--secondary-color, transparent); color: var(--text-color, #eee); }
     .rb-vr [data-role="status"] { color: var(--text-secondary, #aaa); font-size: .85rem; white-space: pre-line; }
-    .rb-vr [data-role="armed"] { font-weight: 600; }
-    .rb-vr [data-role="armed"][data-armed="true"] { color: var(--success-color, #4caf50); }
-    .rb-vr [data-role="motion"] { display: flex; align-items: center; gap: .4rem; font-weight: 600; color: var(--error-color, #dd6b6b); }
-    .rb-vr [data-role="motion"][data-moving="true"] { color: var(--success-color, #4caf50); }
-    .rb-vr [data-role="motion-light"] { width: .7rem; height: .7rem; border-radius: 50%; background: var(--error-color, #b62222); }
-    .rb-vr [data-role="motion"][data-moving="true"] [data-role="motion-light"] { background: var(--success-color, #25b84b); }
+    .rb-vr [data-role="hand"] { display: flex; align-items: center; gap: .5rem; font-weight: 600; color: var(--error-color, #dd6b6b); }
+    .rb-vr [data-role="hand"][data-moving="true"] { color: var(--success-color, #4caf50); }
+    .rb-vr [data-role="hand"] button { margin-left: auto; padding: .3rem .7rem; font-weight: 400; }
+    .rb-vr [data-role="hand"] button[data-pending="true"] { background: var(--error-color, #b62222); }
+    .rb-vr [data-role="motion-light"] { flex: none; width: .7rem; height: .7rem; border-radius: 50%; background: var(--error-color, #b62222); }
+    .rb-vr [data-role="hand"][data-moving="true"] [data-role="motion-light"] { background: var(--success-color, #25b84b); }
     .rb-vr [data-role="cameras"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .35rem .75rem; }
     .rb-vr [data-role="cameras"] label { display: flex; align-items: center; gap: .4rem; font-size: .9rem; }
     .rb-vr [data-role="previews"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .5rem; }
@@ -71,33 +101,28 @@ const PANEL_MARKUP = `
   <div data-role="actions"><button data-action="enter" disabled>Enter VR</button><button data-action="settings" aria-expanded="false">Settings</button></div>
   <div data-role="status">Discovering camera streams…</div>
   <form data-role="settings" hidden>
-    <fieldset>
-      <legend>Robot and ROS</legend>
-      <label>Robot namespace<input data-setting="robot-name" type="text" list="rb-vr-robot-names" required pattern="[A-Za-z0-9][A-Za-z0-9_-]*" /></label>
-      <datalist id="rb-vr-robot-names"><option value="robot_small"></option><option value="robot_big"></option></datalist>
-      <label>Pose target topic<input data-setting="target-topic" type="text" required /></label>
-      <label>Target frame_id<input data-setting="target-frame" type="text" pattern="[A-Za-z0-9_/\-]*" placeholder="(flange pose frame)" /></label>
-      <span data-role="setting-value">Publishes <code>geometry_msgs/msg/PoseStamped</code>. The source pose remains <code data-role="flange-topic"></code>.</span>
-    </fieldset>
-    <fieldset>
-      <legend>Motion tuning</legend>
-      <label>Translation deadzone <span data-role="translation-deadzone-value"></span><input data-setting="translation-deadzone" type="range" min="0" max="0.03" step="0.001" /></label>
-      <label>Rotation deadzone <span data-role="rotation-deadzone-value"></span><input data-setting="rotation-deadzone" type="range" min="0" max="10" step="0.5" /></label>
-      <label>Translation sensitivity <span data-role="translation-sensitivity-value"></span><input data-setting="translation-sensitivity" type="range" min="0.25" max="2" step="0.05" /></label>
-      <label>Rotation sensitivity <span data-role="rotation-sensitivity-value"></span><input data-setting="rotation-sensitivity" type="range" min="0.25" max="2" step="0.05" /></label>
-      <label>Clutch threshold <span data-role="squeeze-threshold-value"></span><input data-setting="squeeze-threshold" type="range" min="0.1" max="0.9" step="0.05" /></label>
-    </fieldset>
+    <datalist id="rb-vr-robot-names"><option value="robot_small"></option><option value="robot_big"></option></datalist>
+    ${HANDS.map(armFieldset).join('')}
     <div data-role="settings-error" role="alert"></div>
     <div data-role="settings-actions"><button type="button" data-action="settings-cancel">Cancel</button><button type="submit">Save settings</button></div>
   </form>
   <div data-role="cameras" aria-label="Camera streams"></div>
-  <div data-role="armed" data-armed="false">Pose control disarmed</div>
-  <div data-role="motion" data-moving="false"><span data-role="motion-light"></span><span data-role="motion-text">Motion idle</span></div>
-  <details><summary>VR controls</summary><ul><li>Trigger at a camera name toggles that stream.</li><li>Grip either controller to grab and reposition a camera panel.</li><li>Right A arms or disarms pose publishing; it re-anchors when arming.</li><li>Right B re-anchors to the latest flange pose.</li><li>Hold the right squeeze as a clutch to move the pose target; release holds it.</li><li>Trigger at Exit VR leaves the headset session.</li></ul></details>
+  ${HANDS.map(handStatusMarkup).join('')}
+  <details><summary>VR controls</summary><ul><li>Trigger at a camera name toggles that stream.</li><li>Trigger at a camera panel grabs and repositions it.</li><li>Each controller drives its own robot (see Settings).</li><li>A (right) / X (left) arms or disarms that robot; arming re-anchors to its latest flange pose.</li><li>B (right) / Y (left) switches that robot's translation between world and tool (TCP) axes.</li><li>Hold a controller's squeeze as a clutch to move its target; release holds it.</li><li>Trigger at Reset L / Reset R, then again within 3 s, sends that robot home through fabrics.</li><li>Trigger at Exit VR leaves the headset session.</li></ul></details>
   <div data-role="previews"></div>
   <div data-role="canvas-host"></div>
 </div>
 `;
+
+interface ArmRuntime {
+  teleop: PoseTeleopController;
+  subscription: { unsubscribe(): Promise<void> } | null;
+  generation: number;
+  armed: boolean;
+  moving: boolean;
+  resetPendingTimer: ReturnType<typeof setTimeout> | null;
+  resetInFlight: boolean;
+}
 
 const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance => {
   const { network, ros, logger } = context;
@@ -115,44 +140,130 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
   let discoveredStreams: GatewayStream[] = [];
   let hasInitialSelection = false;
   let settings: PanelSettings = parsePanelSettings(
-    context.storage?.get<RoboBoyJsonValue>('settings', panelSettingsToJson(DEFAULT_PANEL_SETTINGS))
-      ?? panelSettingsToJson(DEFAULT_PANEL_SETTINGS),
+    context.storage?.get<RoboBoyJsonValue>('settings', panelSettingsToJson(defaultPanelSettings()))
+      ?? panelSettingsToJson(defaultPanelSettings()),
   );
   const selectedStreamNames = new Set<string>();
   const connections = new Map<string, WhepConnection>();
   const connectionControllers = new Map<string, AbortController>();
   const videos = new Map<string, HTMLVideoElement>();
-  let flangePoseSubscription: { unsubscribe(): Promise<void> } | null = null;
-  let robotSubscriptionGeneration = 0;
-
-  const poseTeleopController = new PoseTeleopController({
-    ros,
-    onArmedChange: (armed) => {
-      const el = root?.querySelector<HTMLElement>('[data-role="armed"]');
-      if (!el) return;
-      el.dataset.armed = String(armed);
-      el.textContent = armed ? 'Pose control armed — hold right squeeze to move' : 'Pose control disarmed';
-    },
-    onMotionChange: (moving) => {
-      const el = root?.querySelector<HTMLElement>('[data-role="motion"]');
-      if (el) {
-        el.dataset.moving = String(moving);
-        const text = el.querySelector<HTMLElement>('[data-role="motion-text"]');
-        if (text) text.textContent = moving ? 'Motion enabled' : 'Motion idle';
-      }
-      vrScene?.setMotionActive(moving);
-    },
-    onPublishError: (error) => {
-      logger.warn('Unable to publish the pose target.', error);
-      setStatus(`Pose target publish failed: ${error instanceof Error ? error.message : String(error)}`);
-    },
-  });
-  poseTeleopController.setMotionSettings(settings.motion);
 
   const setStatus = (text: string) => {
     const el = root?.querySelector<HTMLElement>('[data-role="status"]');
     if (el) el.textContent = text;
   };
+
+  const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+  const createArm = (hand: Hand): ArmRuntime => {
+    const arm: ArmRuntime = {
+      teleop: new PoseTeleopController({
+        ros,
+        onArmedChange: (armed) => {
+          arm.armed = armed;
+          renderHand(hand);
+        },
+        onMotionChange: (moving) => {
+          arm.moving = moving;
+          renderHand(hand);
+        },
+        onFrameChange: () => renderHand(hand),
+        onPublishError: (error) => {
+          logger.warn(`Unable to publish the ${hand} pose target.`, error);
+          setStatus(`${settings.arms[hand].robotName} pose target publish failed: ${errorText(error)}`);
+        },
+      }),
+      subscription: null,
+      generation: 0,
+      armed: false,
+      moving: false,
+      resetPendingTimer: null,
+      resetInFlight: false,
+    };
+    arm.teleop.setMotionSettings(settings.arms[hand].motion);
+    return arm;
+  };
+  const arms: Record<Hand, ArmRuntime> = { left: createArm('left'), right: createArm('right') };
+
+  function renderHand(hand: Hand) {
+    const arm = arms[hand];
+    const robotName = settings.arms[hand].robotName;
+    const frame = arm.teleop.frame === 'tool' ? 'TCP' : 'WORLD';
+    const state = arm.resetInFlight ? 'RESETTING' : arm.armed ? 'ARMED' : 'off';
+    const el = root?.querySelector<HTMLElement>(`[data-role="hand"][data-hand="${hand}"]`);
+    if (el) {
+      el.dataset.moving = String(arm.moving);
+      const text = el.querySelector<HTMLElement>('[data-role="hand-text"]');
+      if (text) text.textContent = `${HAND_LABEL[hand]} → ${robotName} · ${frame} · ${state}`;
+      const button = el.querySelector<HTMLButtonElement>('button');
+      if (button) {
+        button.disabled = arm.resetInFlight;
+        button.dataset.pending = String(arm.resetPendingTimer !== null);
+        button.textContent = arm.resetPendingTimer !== null ? 'Confirm reset' : 'Reset robot';
+      }
+    }
+    const short = robotName.replace(/^robot_/, '');
+    vrScene?.setHandStatus(hand, { text: `${hand === 'left' ? 'L' : 'R'} ${short} · ${frame} · ${state}`, moving: arm.moving });
+    vrScene?.setResetButton(
+      hand,
+      arm.resetInFlight ? `Resetting ${short}…` : arm.resetPendingTimer !== null ? `Confirm reset ${short}?` : `Reset robot ${short}`,
+      arm.resetPendingTimer !== null,
+    );
+  }
+  const renderHands = () => HANDS.forEach(renderHand);
+
+  const clearResetPending = (hand: Hand) => {
+    const arm = arms[hand];
+    if (arm.resetPendingTimer !== null) clearTimeout(arm.resetPendingTimer);
+    arm.resetPendingTimer = null;
+  };
+
+  const executeReset = async (hand: Hand) => {
+    const arm = arms[hand];
+    const { robotName, homeJointPositions } = settings.arms[hand];
+    const goal = buildHomeGoal(robotName, homeJointPositions);
+    if (!goal) {
+      setStatus(`${robotName} is not a fabrics arm (robot_small or robot_big); reset unavailable.`);
+      return;
+    }
+    if (typeof ros.sendActionGoal !== 'function') {
+      setStatus('This Robo-Boy build cannot send ROS action goals; update Robo-Boy to reset robots.');
+      return;
+    }
+    arm.teleop.stop();
+    arm.resetInFlight = true;
+    renderHand(hand);
+    const action = fabricsActionForRobot(robotName);
+    setStatus(`Sending ${robotName} home through ${action}…`);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, TELEOP_DRAIN_MS));
+      const result = await ros.sendActionGoal({ action, actionType: FABRICS_ACTION_TYPE, goal, timeoutMs: RESET_TIMEOUT_MS });
+      setStatus(`${robotName} reset: ${typeof result.message === 'string' && result.message ? result.message : 'home reached'}. Arm again to teleoperate.`);
+    } catch (error) {
+      logger.warn(`Unable to reset ${robotName}.`, error);
+      setStatus(`${robotName} reset failed: ${errorText(error)}`);
+    } finally {
+      arm.resetInFlight = false;
+      renderHand(hand);
+    }
+  };
+
+  const onResetPressed = (hand: Hand) => {
+    const arm = arms[hand];
+    if (arm.resetInFlight) return;
+    if (arm.resetPendingTimer === null) {
+      arm.resetPendingTimer = setTimeout(() => {
+        arm.resetPendingTimer = null;
+        renderHand(hand);
+      }, RESET_CONFIRM_MS);
+      renderHand(hand);
+      return;
+    }
+    clearResetPending(hand);
+    void executeReset(hand);
+  };
+
+  const stopAll = () => HANDS.forEach((hand) => arms[hand].teleop.stop());
 
   const setEnterEnabled = () => {
     const button = root?.querySelector<HTMLButtonElement>('[data-action="enter"]');
@@ -176,36 +287,45 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       const input = settingsForm.querySelector<HTMLInputElement>(selector);
       if (input) input.value = value;
     };
-    setValue('[data-setting="robot-name"]', settings.robotName);
-    setValue('[data-setting="target-topic"]', settings.targetPoseTopic);
-    setValue('[data-setting="target-frame"]', settings.targetFrameId);
-    setValue('[data-setting="translation-deadzone"]', String(settings.motion.translationDeadzoneM));
-    setValue('[data-setting="rotation-deadzone"]', String(settings.motion.rotationDeadzoneRad * 180 / Math.PI));
-    setValue('[data-setting="translation-sensitivity"]', String(settings.motion.translationSensitivity));
-    setValue('[data-setting="rotation-sensitivity"]', String(settings.motion.rotationSensitivity));
-    setValue('[data-setting="squeeze-threshold"]', String(settings.motion.squeezeThreshold));
-    const flangeTopic = settingsForm.querySelector<HTMLElement>('[data-role="flange-topic"]');
-    if (flangeTopic) flangeTopic.textContent = flangePoseTopicForRobot(settings.robotName);
-    const robotNameInput = settingsForm.querySelector<HTMLInputElement>('[data-setting="robot-name"]');
-    if (robotNameInput) {
-      robotNameInput.oninput = () => {
-        if (flangeTopic && isRobotName(robotNameInput.value.trim())) {
-          flangeTopic.textContent = flangePoseTopicForRobot(robotNameInput.value.trim());
-        }
+    for (const hand of HANDS) {
+      const arm = settings.arms[hand];
+      setValue(`[data-setting="${hand}-robot-name"]`, arm.robotName);
+      setValue(`[data-setting="${hand}-target-topic"]`, arm.targetPoseTopic);
+      setValue(`[data-setting="${hand}-target-frame"]`, arm.targetFrameId);
+      setValue(`[data-setting="${hand}-home-joints"]`, arm.homeJointPositions.join(', '));
+      setValue(`[data-setting="${hand}-translation-deadzone"]`, String(arm.motion.translationDeadzoneM));
+      setValue(`[data-setting="${hand}-rotation-deadzone"]`, String(arm.motion.rotationDeadzoneRad * 180 / Math.PI));
+      setValue(`[data-setting="${hand}-translation-sensitivity"]`, String(arm.motion.translationSensitivity));
+      setValue(`[data-setting="${hand}-rotation-sensitivity"]`, String(arm.motion.rotationSensitivity));
+      setValue(`[data-setting="${hand}-squeeze-threshold"]`, String(arm.motion.squeezeThreshold));
+      const flangeTopic = settingsForm.querySelector<HTMLElement>(`[data-role="${hand}-flange-topic"]`);
+      const actionName = settingsForm.querySelector<HTMLElement>(`[data-role="${hand}-action"]`);
+      const showRobotTopics = (robotName: string) => {
+        if (flangeTopic) flangeTopic.textContent = flangePoseTopicForRobot(robotName);
+        if (actionName) actionName.textContent = fabricsActionForRobot(robotName);
       };
+      showRobotTopics(arm.robotName);
+      const robotNameInput = settingsForm.querySelector<HTMLInputElement>(`[data-setting="${hand}-robot-name"]`);
+      if (robotNameInput) {
+        robotNameInput.oninput = () => {
+          if (isRobotName(robotNameInput.value.trim())) showRobotTopics(robotNameInput.value.trim());
+        };
+      }
     }
     const updateValues = () => {
-      const values: Array<[string, string, (value: number) => string]> = [
-        ['translation-deadzone', 'translation-deadzone-value', (value) => `${(value * 1000).toFixed(0)} mm`],
-        ['rotation-deadzone', 'rotation-deadzone-value', (value) => `${value.toFixed(1)}°`],
-        ['translation-sensitivity', 'translation-sensitivity-value', (value) => `${value.toFixed(2)}×`],
-        ['rotation-sensitivity', 'rotation-sensitivity-value', (value) => `${value.toFixed(2)}×`],
-        ['squeeze-threshold', 'squeeze-threshold-value', (value) => `${value.toFixed(2)}`],
+      const values: Array<[string, (value: number) => string]> = [
+        ['translation-deadzone', (value) => `${(value * 1000).toFixed(0)} mm`],
+        ['rotation-deadzone', (value) => `${value.toFixed(1)}°`],
+        ['translation-sensitivity', (value) => `${value.toFixed(2)}×`],
+        ['rotation-sensitivity', (value) => `${value.toFixed(2)}×`],
+        ['squeeze-threshold', (value) => `${value.toFixed(2)}`],
       ];
-      for (const [inputName, outputRole, format] of values) {
-        const input = settingsForm.querySelector<HTMLInputElement>(`[data-setting="${inputName}"]`);
-        const output = settingsForm.querySelector<HTMLElement>(`[data-role="${outputRole}"]`);
-        if (input && output) output.textContent = format(Number(input.value));
+      for (const hand of HANDS) {
+        for (const [name, format] of values) {
+          const input = settingsForm.querySelector<HTMLInputElement>(`[data-setting="${hand}-${name}"]`);
+          const output = settingsForm.querySelector<HTMLElement>(`[data-role="${hand}-${name}-value"]`);
+          if (input && output) output.textContent = format(Number(input.value));
+        }
       }
     };
     settingsForm.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((input) => {
@@ -223,40 +343,43 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
     settingsButton.setAttribute('aria-expanded', String(open));
   };
 
-  const configureRobot = async () => {
-    const robotName = settings.robotName;
+  const configureRobot = async (hand: Hand) => {
+    const arm = arms[hand];
+    const { robotName, targetPoseTopic, targetFrameId } = settings.arms[hand];
 
-    const generation = ++robotSubscriptionGeneration;
-    poseTeleopController.setTargetTopic(settings.targetPoseTopic);
-    poseTeleopController.setTargetFrameId(settings.targetFrameId);
-    const previousSubscription = flangePoseSubscription;
-    flangePoseSubscription = null;
+    const generation = ++arm.generation;
+    arm.teleop.setTargetTopic(targetPoseTopic);
+    arm.teleop.setTargetFrameId(targetFrameId);
+    renderHand(hand);
+    const previousSubscription = arm.subscription;
+    arm.subscription = null;
     if (previousSubscription) await previousSubscription.unsubscribe().catch((error) => logger.warn('Unable to unsubscribe from the previous flange pose.', error));
 
     try {
       const subscription = await ros.subscribe(
         {
-          topic: `/${robotName}${FLANGE_POSE_SUFFIX}`,
+          topic: flangePoseTopicForRobot(robotName),
           messageType: POSE_STAMPED_TYPE,
           throttleMs: 33,
           queueLength: 1,
         },
         (message) => {
-          if (generation === robotSubscriptionGeneration) poseTeleopController.setRobotPose(message);
+          if (generation === arm.generation) arm.teleop.setRobotPose(message);
         }
       );
-      if (generation !== robotSubscriptionGeneration) {
+      if (generation !== arm.generation) {
         await subscription.unsubscribe();
         return;
       }
-      flangePoseSubscription = subscription;
-      setStatus(`Using ${robotName}. Waiting for ${flangePoseTopicForRobot(robotName)}.`);
+      arm.subscription = subscription;
+      setStatus(`Using ${settings.arms.left.robotName} (left) and ${settings.arms.right.robotName} (right). Waiting for flange poses.`);
     } catch (error) {
-      if (generation === robotSubscriptionGeneration) {
-        setStatus(`Unable to subscribe to ${flangePoseTopicForRobot(robotName)}: ${error instanceof Error ? error.message : String(error)}`);
+      if (generation === arm.generation) {
+        setStatus(`Unable to subscribe to ${flangePoseTopicForRobot(robotName)}: ${errorText(error)}`);
       }
     }
   };
+  const configureRobots = () => HANDS.forEach((hand) => void configureRobot(hand));
 
   const cameraByName = (name: string) => discoveredStreams.find((stream) => stream.name === name);
 
@@ -425,6 +548,40 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
     await Promise.all([...new Set([...connections.keys(), ...connectionControllers.keys()])].map((name) => disconnectStream(name)));
   };
 
+  const readSettingsForm = (form: HTMLFormElement): PanelSettings | string => {
+    const value = (setting: string) => form.querySelector<HTMLInputElement>(`[data-setting="${setting}"]`)?.value.trim() ?? '';
+    const next = parsePanelSettings(panelSettingsToJson(settings));
+    for (const hand of HANDS) {
+      const label = HAND_LABEL[hand];
+      const robotName = value(`${hand}-robot-name`);
+      const targetPoseTopic = value(`${hand}-target-topic`);
+      const targetFrameId = value(`${hand}-target-frame`);
+      const homeJointPositions = parseHomeJointPositions(value(`${hand}-home-joints`));
+      if (!isRobotName(robotName)) return `${label} robot namespace must contain only letters, digits, hyphens, and underscores.`;
+      if (!isRosTopic(targetPoseTopic)) return `${label} pose target topic must be an absolute ROS topic name.`;
+      if (!isFrameId(targetFrameId)) return `${label} target frame_id may contain only letters, digits, underscores, hyphens, and slashes.`;
+      if (!homeJointPositions) return `${label} home joints must be six comma-separated angles in radians.`;
+      next.arms[hand] = {
+        robotName,
+        targetPoseTopic,
+        targetFrameId,
+        homeJointPositions,
+        motion: {
+          translationDeadzoneM: Number(value(`${hand}-translation-deadzone`)),
+          rotationDeadzoneRad: Number(value(`${hand}-rotation-deadzone`)) * Math.PI / 180,
+          translationSensitivity: Number(value(`${hand}-translation-sensitivity`)),
+          rotationSensitivity: Number(value(`${hand}-rotation-sensitivity`)),
+          squeezeThreshold: Number(value(`${hand}-squeeze-threshold`)),
+        },
+      };
+    }
+    if (next.arms.left.robotName === next.arms.right.robotName || next.arms.left.targetPoseTopic === next.arms.right.targetPoseTopic) {
+      return 'The two controllers must drive different robots and topics.';
+    }
+    // Round-trip through the parser so slider values are clamped like stored ones.
+    return parsePanelSettings(panelSettingsToJson(next));
+  };
+
   return {
     mount(container) {
       container.innerHTML = PANEL_MARKUP;
@@ -432,10 +589,15 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       if (!root) throw new Error('Unable to create the VR panel root.');
 
       vrScene = new VrScene({
-        onRightControllerFrame: (frame) => poseTeleopController.update(frame),
+        onControllerFrame: (hand, frame) => {
+          const arm = arms[hand];
+          // No re-arming mid-reset: a target anchored mid-motion would pull the robot back afterwards.
+          arm.teleop.update(arm.resetInFlight ? { ...frame, armPressed: false } : frame);
+        },
         onToggle: (name) => toggleStream(name, !selectedStreamNames.has(name)),
+        onReset: onResetPressed,
         onExit: () => {
-          poseTeleopController.stop();
+          stopAll();
           setStatus('VR session ended.');
         },
       });
@@ -446,69 +608,47 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
         root!.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)?.addEventListener('click', () => {
           Promise.resolve()
             .then(handler)
-            .catch((error) => setStatus(`${action} failed: ${error instanceof Error ? error.message : String(error)}`));
+            .catch((error) => setStatus(`${action} failed: ${errorText(error)}`));
         });
       onAction('settings', () => setSettingsOpen(true));
       onAction('settings-cancel', () => setSettingsOpen(false));
+      HANDS.forEach((hand) => onAction(`reset-${hand}`, () => onResetPressed(hand)));
       onAction('enter', async () => {
         if (!navigator.xr) throw new Error('WebXR is unavailable in this frame.');
         await vrScene?.enter();
-        setStatus('In VR: A arms pose control, B re-anchors, and right squeeze is the clutch.');
+        setStatus('In VR: A/X arms each robot, B/Y switches world/TCP, and each squeeze is that robot\'s clutch.');
       });
 
       root.querySelector<HTMLFormElement>('[data-role="settings"]')?.addEventListener('submit', (event) => {
         event.preventDefault();
         const form = event.currentTarget as HTMLFormElement;
-        const value = (setting: string) => form.querySelector<HTMLInputElement>(`[data-setting="${setting}"]`)?.value.trim() ?? '';
-        const robotName = value('robot-name');
-        const targetPoseTopic = value('target-topic');
-        const targetFrameId = value('target-frame');
         const error = form.querySelector<HTMLElement>('[data-role="settings-error"]');
-        if (!isRobotName(robotName)) {
-          if (error) error.textContent = 'Robot namespace must contain only letters, digits, hyphens, and underscores.';
+        const next = readSettingsForm(form);
+        if (typeof next === 'string') {
+          if (error) error.textContent = next;
           return;
         }
-        if (!isRosTopic(targetPoseTopic)) {
-          if (error) error.textContent = 'Pose target topic must be an absolute ROS topic name.';
-          return;
-        }
-        if (!isFrameId(targetFrameId)) {
-          if (error) error.textContent = 'Target frame_id may contain only letters, digits, underscores, hyphens, and slashes.';
-          return;
-        }
-        settings = parsePanelSettings({
-          version: 1,
-          robotName,
-          targetPoseTopic,
-          targetFrameId,
-          selectedStreamNames: settings.selectedStreamNames,
-          motion: {
-            translationDeadzoneM: Number(value('translation-deadzone')),
-            rotationDeadzoneRad: Number(value('rotation-deadzone')) * Math.PI / 180,
-            translationSensitivity: Number(value('translation-sensitivity')),
-            rotationSensitivity: Number(value('rotation-sensitivity')),
-            squeezeThreshold: Number(value('squeeze-threshold')),
-          },
-        });
-        poseTeleopController.stop();
-        poseTeleopController.setMotionSettings(settings.motion);
+        settings = { ...next, selectedStreamNames: settings.selectedStreamNames };
+        stopAll();
+        HANDS.forEach((hand) => arms[hand].teleop.setMotionSettings(settings.arms[hand].motion));
         saveSettings();
         if (error) error.textContent = '';
         setSettingsOpen(false);
-        void configureRobot();
-        setStatus(`Settings saved. Using ${settings.targetPoseTopic}; arm again after the flange pose arrives.`);
+        configureRobots();
+        setStatus('Settings saved; arm again after the flange poses arrive.');
       });
 
       selectedStreamNames.clear();
       settings.selectedStreamNames?.forEach((name) => selectedStreamNames.add(name));
-      void configureRobot();
+      renderHands();
+      configureRobots();
       void refreshStreams();
     },
     setActive(isActive) {
       const wasActive = active;
       active = isActive;
       if (!isActive) {
-        poseTeleopController.stop();
+        stopAll();
         void teardownStreams();
       } else if (!wasActive) {
         void refreshStreams();
@@ -518,11 +658,15 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       active = false;
       discoveryController?.abort();
       discoveryController = null;
-      poseTeleopController.stop();
-      robotSubscriptionGeneration += 1;
-      const subscription = flangePoseSubscription;
-      flangePoseSubscription = null;
-      if (subscription) await subscription.unsubscribe().catch((error) => logger.warn('Unable to unsubscribe from the flange pose.', error));
+      stopAll();
+      await Promise.all(HANDS.map(async (hand) => {
+        const arm = arms[hand];
+        clearResetPending(hand);
+        arm.generation += 1;
+        const subscription = arm.subscription;
+        arm.subscription = null;
+        if (subscription) await subscription.unsubscribe().catch((error) => logger.warn('Unable to unsubscribe from the flange pose.', error));
+      }));
       await teardownStreams();
       vrScene?.dispose();
       vrScene = null;

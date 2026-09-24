@@ -2,16 +2,27 @@
 // camera toggles, and an exit button. The panel supplies the stream lifecycle; this class only
 // owns the WebXR scene and reports trigger actions back to it.
 import * as THREE from 'three';
+import type { Hand } from './panelSettings';
 
-const RIGHT_A_BUTTON = 4;
-const RIGHT_B_BUTTON = 5;
+// xr-standard reserves buttons 0-3 for trigger, squeeze, touchpad, and thumbstick. Quest Touch
+// exposes its face buttons after those slots: A/B on the right controller, X/Y on the left.
+const LOWER_FACE_BUTTON = 4;
+const UPPER_FACE_BUTTON = 5;
+const HANDS: readonly Hand[] = ['left', 'right'];
 
 export interface VrControllerFrame {
   pose: { position: THREE.Vector3; orientation: THREE.Quaternion } | null;
   squeeze: number;
   armPressed: boolean;
-  reanchorPressed: boolean;
+  frameTogglePressed: boolean;
 }
+
+export interface VrHandStatus {
+  text: string;
+  moving: boolean;
+}
+
+const IDLE_FRAME: VrControllerFrame = { pose: null, squeeze: 0, armPressed: false, frameTogglePressed: false };
 
 const PANEL_POSITIONS: Array<[number, number, number]> = [
   [-1.8, -0.1, -2.8],
@@ -50,10 +61,34 @@ interface CameraButton {
 }
 
 export interface VrSceneOptions {
-  onRightControllerFrame(frame: VrControllerFrame): void;
+  onControllerFrame(hand: Hand, frame: VrControllerFrame): void;
   onToggle(id: string): void;
+  onReset(hand: Hand): void;
   onExit(): void;
 }
+
+type LabelMesh = THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+
+const labelMesh = (text: string, color: string, x: number, y: number): LabelMesh => {
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.1, 0.26),
+    new THREE.MeshBasicMaterial({ map: labelTexture(text, color) })
+  );
+  mesh.position.set(x, y, -2.5);
+  return mesh;
+};
+
+const setLabel = (mesh: LabelMesh, text: string, color: string): void => {
+  mesh.material.map?.dispose();
+  mesh.material.map = labelTexture(text, color);
+  mesh.material.needsUpdate = true;
+};
+
+const disposeLabel = (mesh: LabelMesh): void => {
+  mesh.material.map?.dispose();
+  mesh.material.dispose();
+  mesh.geometry.dispose();
+};
 
 export class VrScene {
   readonly renderer: THREE.WebGLRenderer;
@@ -68,17 +103,21 @@ export class VrScene {
   private readonly viewerPosition = new THREE.Vector3();
   private readonly controllerPosition = new THREE.Vector3();
   private readonly targetPosition = new THREE.Vector3();
-  private readonly exitButton: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
-  private readonly motionIndicator: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
-  private readonly onRightControllerFrame: VrSceneOptions['onRightControllerFrame'];
+  private readonly exitButton: LabelMesh;
+  // Per hand: robot, frame, and armed state, green while that controller is sending motion.
+  private readonly handStatus: Record<Hand, LabelMesh>;
+  private readonly resetButtons: Record<Hand, LabelMesh>;
+  private readonly onControllerFrame: VrSceneOptions['onControllerFrame'];
   private readonly onToggle: VrSceneOptions['onToggle'];
+  private readonly onReset: VrSceneOptions['onReset'];
   private readonly onExitCallback: VrSceneOptions['onExit'];
   private session: XRSession | null = null;
   private grabbedBy = new Map<THREE.XRTargetRaySpace, THREE.Mesh>();
 
   constructor(options: VrSceneOptions) {
-    this.onRightControllerFrame = options.onRightControllerFrame;
+    this.onControllerFrame = options.onControllerFrame;
     this.onToggle = options.onToggle;
+    this.onReset = options.onReset;
     this.onExitCallback = options.onExit;
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -117,19 +156,16 @@ export class VrScene {
       this.scene.add(this.controllerGrips[index]!);
     });
 
-    this.exitButton = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.1, 0.26),
-      new THREE.MeshBasicMaterial({ map: labelTexture('Exit VR', '#7a3535') })
-    );
-    this.exitButton.position.set(1.25, 1.85, -2.5);
-    this.scene.add(this.exitButton);
-
-    this.motionIndicator = new THREE.Mesh(
-      new THREE.SphereGeometry(0.09, 20, 12),
-      new THREE.MeshBasicMaterial({ color: '#b62222' })
-    );
-    this.motionIndicator.position.set(-1.9, 2.2, -2.5);
-    this.scene.add(this.motionIndicator);
+    this.exitButton = labelMesh('Exit VR', '#7a3535', 1.25, 1.85);
+    this.handStatus = {
+      left: labelMesh('L', '#b62222', -0.6, 2.2),
+      right: labelMesh('R', '#b62222', 0.6, 2.2),
+    };
+    this.resetButtons = {
+      left: labelMesh('Reset L', '#8a5a14', 1.25, 1.51),
+      right: labelMesh('Reset R', '#8a5a14', 1.25, 1.17),
+    };
+    this.scene.add(this.exitButton, ...Object.values(this.handStatus), ...Object.values(this.resetButtons));
 
     this.renderer.setAnimationLoop(() => this.render());
   }
@@ -180,8 +216,12 @@ export class VrScene {
     this.panels.delete(id);
   }
 
-  setMotionActive(active: boolean): void {
-    this.motionIndicator.material.color.set(active ? '#25b84b' : '#b62222');
+  setHandStatus(hand: Hand, status: VrHandStatus): void {
+    setLabel(this.handStatus[hand], status.text, status.moving ? '#25b84b' : '#b62222');
+  }
+
+  setResetButton(hand: Hand, text: string, pending: boolean): void {
+    setLabel(this.resetButtons[hand], text, pending ? '#b62222' : '#8a5a14');
   }
 
   async enter(): Promise<void> {
@@ -202,11 +242,7 @@ export class VrScene {
     [...this.panels.keys()].forEach((id) => this.removeStream(id));
     this.buttons.forEach((button) => this.disposeButton(button));
     this.buttons.clear();
-    this.exitButton.material.map?.dispose();
-    this.exitButton.material.dispose();
-    this.exitButton.geometry.dispose();
-    this.motionIndicator.material.dispose();
-    this.motionIndicator.geometry.dispose();
+    [this.exitButton, ...Object.values(this.handStatus), ...Object.values(this.resetButtons)].forEach(disposeLabel);
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
@@ -234,6 +270,11 @@ export class VrScene {
     const button = this.hits(controller, [...this.buttons.values()]) as THREE.Mesh | undefined;
     if (button) {
       this.onToggle(String(button.userData.cameraId));
+      return;
+    }
+    const reset = HANDS.find((hand) => this.hits(controller, [this.resetButtons[hand]]));
+    if (reset) {
+      this.onReset(reset);
       return;
     }
     if (this.hits(controller, [this.exitButton])) {
@@ -280,7 +321,7 @@ export class VrScene {
 
   private render(): void {
     if (this.session) {
-      this.updateRightController();
+      HANDS.forEach((hand) => this.updateController(hand));
       this.viewerPosition.setFromMatrixPosition(this.renderer.xr.getCamera().matrixWorld);
       this.panels.forEach((entry) => {
         if (entry.drag) {
@@ -296,12 +337,12 @@ export class VrScene {
     this.renderer.render(this.scene, this.camera);
   }
 
-  private updateRightController(): void {
+  private updateController(hand: Hand): void {
     const index = this.controllers.findIndex(
-      (controller) => (controller.userData.inputSource as XRInputSource | undefined)?.handedness === 'right'
+      (controller) => (controller.userData.inputSource as XRInputSource | undefined)?.handedness === hand
     );
     if (index < 0) {
-      this.onRightControllerFrame({ pose: null, squeeze: 0, armPressed: false, reanchorPressed: false });
+      this.onControllerFrame(hand, IDLE_FRAME);
       return;
     }
 
@@ -316,20 +357,18 @@ export class VrScene {
     });
 
     if (!inputSource.gripSpace || !gamepad) {
-      this.onRightControllerFrame({ pose: null, squeeze, armPressed: false, reanchorPressed: false });
+      this.onControllerFrame(hand, { ...IDLE_FRAME, squeeze });
       return;
     }
 
-    this.onRightControllerFrame({
+    this.onControllerFrame(hand, {
       pose: {
         position: grip.getWorldPosition(new THREE.Vector3()),
         orientation: grip.getWorldQuaternion(new THREE.Quaternion()),
       },
       squeeze,
-      // xr-standard reserves buttons 0-3 for trigger, squeeze, touchpad, and thumbstick.
-      // Quest Touch exposes its right A/B face buttons after those reserved slots.
-      armPressed: gamepad.buttons[RIGHT_A_BUTTON]?.pressed ?? false,
-      reanchorPressed: gamepad.buttons[RIGHT_B_BUTTON]?.pressed ?? false,
+      armPressed: gamepad.buttons[LOWER_FACE_BUTTON]?.pressed ?? false,
+      frameTogglePressed: gamepad.buttons[UPPER_FACE_BUTTON]?.pressed ?? false,
     });
   }
 }
