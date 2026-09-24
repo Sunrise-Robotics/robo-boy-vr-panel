@@ -55,12 +55,15 @@ container.
 - **Grip (either controller)**: grab a floating camera panel to reposition
   it; release to let it settle and face you again.
 - **Trigger, pointed at "Exit VR"**: leaves the immersive session.
-- **Settings**: one section per controller (defaults: left `robot_big`,
-  right `robot_small`). Each has the robot namespace, the `PoseStamped`
+- **Settings**: one section per controller (defaults: left `robot_small`,
+  right `robot_big`). Each has the robot (dropdown), the `PoseStamped`
   publish topic (default `/{robot}/teleop_command`), the published `frame_id`
   (default `arm_base`; empty passes the flange pose frame through), the six
   home joint angles Reset robot sends (default: fabrics'
-  `robot_config.default_joint_pos`), translation and rotation deadzones and
+  `robot_config.default_joint_pos`), an axis map (which robot axis, with
+  sign, controller forward / left / up drives; default +X / +Y / +Z; use it
+  when a direction feels swapped or inverted, and rotation follows the same
+  map), translation and rotation deadzones and
   sensitivities, and the squeeze threshold. The two controllers must use
   different robots.
 - **A (right) / X (left)**: arm or disarm that robot. Arming re-anchors to

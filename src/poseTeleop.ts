@@ -42,7 +42,56 @@ const PUBLISH_INTERVAL_MS = 1000 / 30;
 const MAX_TRANSLATION_DELTA_M = 0.05;
 const MAX_ROTATION_DELTA_RAD = Math.PI / 9;
 
+export type RobotAxis = '+x' | '-x' | '+y' | '-y' | '+z' | '-z';
+export const ROBOT_AXES: readonly RobotAxis[] = ['+x', '-x', '+y', '-y', '+z', '-z'];
+
+/** Which robot axis each controller direction drives; the three must use different robot axes. */
+export interface AxisMap {
+  forward: RobotAxis;
+  left: RobotAxis;
+  up: RobotAxis;
+}
+
+// Matches the OpenXR-to-USD basis used by ai_policy_stack's Quest teleop (robot X-forward, Y-left, Z-up).
+export const DEFAULT_AXIS_MAP: AxisMap = { forward: '+x', left: '+y', up: '+z' };
+
+export const isAxisMap = (value: unknown): value is AxisMap => {
+  const map = value as Partial<AxisMap> | null;
+  if (!map || typeof map !== 'object') return false;
+  const axes = [map.forward, map.left, map.up];
+  return axes.every((axis) => ROBOT_AXES.includes(axis as RobotAxis))
+    && new Set(axes.map((axis) => axis![1])).size === 3;
+};
+
+// WebXR local space is right/up/back, so forward is -Z and left is -X.
+const WEBXR_DIRECTIONS: Record<keyof AxisMap, THREE.Vector3> = {
+  forward: new THREE.Vector3(0, 0, -1),
+  left: new THREE.Vector3(-1, 0, 0),
+  up: new THREE.Vector3(0, 1, 0),
+};
+
+const robotAxisVector = (axis: RobotAxis): THREE.Vector3 => {
+  const vector = new THREE.Vector3();
+  vector.setComponent('xyz'.indexOf(axis[1]!), axis[0] === '-' ? -1 : 1);
+  return vector;
+};
+
+/** Orthogonal WebXR-to-robot matrix: sum of robotAxis * webxrDirection^T. May be a reflection. */
+export const axisMapMatrix = (map: AxisMap): THREE.Matrix4 => {
+  const m = new THREE.Matrix3().set(0, 0, 0, 0, 0, 0, 0, 0, 0);
+  for (const key of Object.keys(WEBXR_DIRECTIONS) as Array<keyof AxisMap>) {
+    const robot = robotAxisVector(map[key]);
+    const webxr = WEBXR_DIRECTIONS[key];
+    const e = m.elements; // column-major
+    for (let row = 0; row < 3; row += 1) {
+      for (let col = 0; col < 3; col += 1) e[col * 3 + row]! += robot.getComponent(row) * webxr.getComponent(col);
+    }
+  }
+  return new THREE.Matrix4().setFromMatrix3(m);
+};
+
 export interface PoseTeleopMotionSettings {
+  axisMap: AxisMap;
   translationDeadzoneM: number;
   rotationDeadzoneRad: number;
   translationSensitivity: number;
@@ -56,18 +105,9 @@ export const DEFAULT_POSE_TELEOP_MOTION_SETTINGS: PoseTeleopMotionSettings = {
   translationSensitivity: 1,
   rotationSensitivity: 1,
   squeezeThreshold: 0.5,
+  axisMap: { ...DEFAULT_AXIS_MAP },
 };
 
-// WebXR local space is right/up/back. The robot pose path this follows is X-forward, Y-left,
-// Z-up, matching the OpenXR-to-USD basis used by ai_policy_stack's Quest teleop.
-const WEBXR_TO_ROBOT = new THREE.Matrix4().set(
-  0, 0, -1, 0,
-  -1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 0, 1
-);
-const WEBXR_TO_ROBOT_ROTATION = new THREE.Quaternion().setFromRotationMatrix(WEBXR_TO_ROBOT);
-const ROBOT_TO_WEBXR_ROTATION = WEBXR_TO_ROBOT_ROTATION.clone().invert();
 
 const buttonPressed = (button: boolean, previous: boolean): boolean => button && !previous;
 
@@ -122,6 +162,7 @@ export class PoseTeleopController {
   private lastPublishedAt = Number.NEGATIVE_INFINITY;
   private moving = false;
   private motionSettings: PoseTeleopMotionSettings = { ...DEFAULT_POSE_TELEOP_MOTION_SETTINGS };
+  private webxrToRobot = axisMapMatrix(DEFAULT_AXIS_MAP);
   private pendingTranslation = new THREE.Vector3();
   private pendingRotation = new THREE.Quaternion();
 
@@ -150,7 +191,8 @@ export class PoseTeleopController {
   }
 
   setMotionSettings(settings: PoseTeleopMotionSettings): void {
-    this.motionSettings = { ...settings };
+    this.motionSettings = { ...settings, axisMap: { ...settings.axisMap } };
+    this.webxrToRobot = axisMapMatrix(settings.axisMap);
     this.clearPendingMotion();
   }
 
@@ -231,7 +273,7 @@ export class PoseTeleopController {
       const translation = this.pendingTranslation.multiplyScalar(this.motionSettings.translationSensitivity);
       this.pendingTranslation = new THREE.Vector3();
       if (translation.length() > MAX_TRANSLATION_DELTA_M) translation.setLength(MAX_TRANSLATION_DELTA_M);
-      translation.applyMatrix4(WEBXR_TO_ROBOT);
+      translation.applyMatrix4(this.webxrToRobot);
       // Tool frame: the robot-axis delta is read in the target's own axes (joy_to_cartesian's rotate_vector).
       if (this.translationFrame === 'tool') translation.applyQuaternion(this.targetPose.orientation);
       this.targetPose.position.add(translation);
@@ -249,11 +291,11 @@ export class PoseTeleopController {
           angle,
         );
         this.pendingRotation = new THREE.Quaternion();
-        const robotDelta = WEBXR_TO_ROBOT_ROTATION
-          .clone()
-          .multiply(delta)
-          .multiply(ROBOT_TO_WEBXR_ROTATION)
-          .normalize();
+        // M R M^T is a proper rotation even when the axis map M is a reflection.
+        const rotation = new THREE.Matrix4()
+          .multiplyMatrices(this.webxrToRobot, new THREE.Matrix4().makeRotationFromQuaternion(delta))
+          .multiply(this.webxrToRobot.clone().transpose());
+        const robotDelta = new THREE.Quaternion().setFromRotationMatrix(rotation).normalize();
         this.targetPose.orientation.premultiply(robotDelta).normalize();
       }
     }

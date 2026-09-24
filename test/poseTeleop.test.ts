@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as THREE from 'three';
-import { buildHomeGoal, PoseTeleopController, parsePoseStamped } from '../src/poseTeleop.ts';
+import { axisMapMatrix, buildHomeGoal, DEFAULT_POSE_TELEOP_MOTION_SETTINGS, PoseTeleopController, parsePoseStamped } from '../src/poseTeleop.ts';
 
 const robotPose = {
   header: { frame_id: 'world' },
@@ -67,6 +67,7 @@ test('applies configured deadzone and sensitivity to controller translation', ()
     translationSensitivity: 0.5,
     rotationSensitivity: 1,
     squeezeThreshold: 0.5,
+    axisMap: { forward: '+x', left: '+y', up: '+z' },
   });
   controller.setRobotPose(robotPose as any);
   controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, frameTogglePressed: false }, 0);
@@ -150,4 +151,35 @@ test('builds a single-arm fabrics joint goal for known arms only', () => {
     cruise_velocity: 0,
   });
   assert.equal(buildHomeGoal('robot_other', home), null);
+});
+
+test('axis map remaps controller left/right onto robot forward/back', () => {
+  const published: any[] = [];
+  const controller = new PoseTeleopController({ ros: { publish: async (options: unknown) => void published.push(options) } as any });
+  controller.setTargetTopic('/robot_big/teleop_command');
+  controller.setMotionSettings({ ...DEFAULT_POSE_TELEOP_MOTION_SETTINGS, axisMap: { forward: '+y', left: '+x', up: '+z' } });
+  controller.setRobotPose(robotPose as any);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: true, frameTogglePressed: false }, 0);
+  controller.update({ pose: controllerPose(0), squeeze: 0, armPressed: false, frameTogglePressed: false }, 40);
+  controller.update({ pose: controllerPose(0.02), squeeze: 1, armPressed: false, frameTogglePressed: false }, 80);
+
+  const { x, y } = published.at(-1).message.pose.position;
+  assert.ok(Math.abs(x - 0.98) < 1e-9 && Math.abs(y - 2) < 1e-9, `got ${x}, ${y}`); // right = -left = robot -X
+});
+
+test('rotation follows the axis map, including mirrored maps', () => {
+  // Mirrored map (left -> -Y) is a reflection; M R M^T must still be a proper rotation.
+  const m = axisMapMatrix({ forward: '+x', left: '-y', up: '+z' });
+  assert.ok(Math.abs(m.determinant() + 1) < 1e-9);
+  const published: any[] = [];
+  const controller = new PoseTeleopController({ ros: { publish: async (options: unknown) => void published.push(options) } as any });
+  controller.setTargetTopic('/robot_big/teleop_command');
+  controller.setMotionSettings({ ...DEFAULT_POSE_TELEOP_MOTION_SETTINGS, rotationDeadzoneRad: 0, axisMap: { forward: '+x', left: '-y', up: '+z' } });
+  controller.setRobotPose(robotPose as any);
+  const yawed = (angle: number) => ({ position: new THREE.Vector3(), orientation: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle) });
+  controller.update({ pose: yawed(0), squeeze: 0, armPressed: true, frameTogglePressed: false }, 0);
+  controller.update({ pose: yawed(0), squeeze: 0, armPressed: false, frameTogglePressed: false }, 40);
+  controller.update({ pose: yawed(0.1), squeeze: 1, armPressed: false, frameTogglePressed: false }, 80);
+  const q = published.at(-1).message.pose.orientation; // Yaw about up stays about Z, mirrored in sign by the flipped Y.
+  assert.ok(Math.abs(q.z + Math.sin(0.05)) < 1e-6 && Math.abs(q.x) < 1e-9 && Math.abs(q.y) < 1e-9, JSON.stringify(q));
 });

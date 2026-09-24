@@ -15,8 +15,17 @@ import {
   type WhepConnection,
 } from './whep';
 import { VrScene } from './vrScene';
-import { buildHomeGoal, FABRICS_ACTION_TYPE, PoseTeleopController } from './poseTeleop';
 import {
+  buildHomeGoal,
+  FABRICS_ACTION_TYPE,
+  isAxisMap,
+  PoseTeleopController,
+  ROBOT_AXES,
+  type AxisMap,
+  type RobotAxis,
+} from './poseTeleop';
+import {
+  defaultHomeForRobot,
   defaultPanelSettings,
   fabricsActionForRobot,
   flangePoseTopicForRobot,
@@ -27,7 +36,9 @@ import {
   panelSettingsToJson,
   parseHomeJointPositions,
   parsePanelSettings,
+  ROBOT_NAMES,
   type Hand,
+  targetPoseTopicForRobot,
   type PanelSettings,
 } from './panelSettings';
 import {
@@ -48,14 +59,20 @@ const RESET_CONFIRM_MS = 3000;
 const TELEOP_DRAIN_MS = 600;
 const RESET_TIMEOUT_MS = 120_000;
 
+const AXIS_DIRECTIONS: Array<[keyof AxisMap, string]> = [['forward', 'forward'], ['left', 'left'], ['up', 'up']];
+const options = (values: readonly string[], label = (value: string) => value) =>
+  values.map((value) => `<option value="${value}">${label(value)}</option>`).join('');
+
 const armFieldset = (hand: Hand) => `
     <fieldset>
       <legend>${HAND_LABEL[hand]} controller</legend>
-      <label>Robot namespace<input data-setting="${hand}-robot-name" type="text" list="rb-vr-robot-names" required pattern="[A-Za-z0-9][A-Za-z0-9_-]*" /></label>
+      <label>Robot<select data-setting="${hand}-robot-name">${options(ROBOT_NAMES)}</select></label>
       <label>Pose target topic<input data-setting="${hand}-target-topic" type="text" required /></label>
       <label>Target frame_id<input data-setting="${hand}-target-frame" type="text" pattern="[A-Za-z0-9_/\\-]*" placeholder="(flange pose frame)" /></label>
       <label>Reset home joints (rad, 6 comma-separated)<input data-setting="${hand}-home-joints" type="text" required /></label>
       <span data-role="setting-value">Publishes <code>geometry_msgs/msg/PoseStamped</code> from <code data-role="${hand}-flange-topic"></code>; reset sends a joint goal to <code data-role="${hand}-action"></code>.</span>
+      <div data-role="axis-map">${AXIS_DIRECTIONS.map(([direction, label]) =>
+        `<label>Controller ${label} moves robot<select data-setting="${hand}-axis-${direction}">${options(ROBOT_AXES, (axis) => axis.toUpperCase())}</select></label>`).join('')}</div>
       <label>Translation deadzone <span data-role="${hand}-translation-deadzone-value"></span><input data-setting="${hand}-translation-deadzone" type="range" min="0" max="0.03" step="0.001" /></label>
       <label>Rotation deadzone <span data-role="${hand}-rotation-deadzone-value"></span><input data-setting="${hand}-rotation-deadzone" type="range" min="0" max="10" step="0.5" /></label>
       <label>Translation sensitivity <span data-role="${hand}-translation-sensitivity-value"></span><input data-setting="${hand}-translation-sensitivity" type="range" min="0.25" max="2" step="0.05" /></label>
@@ -90,6 +107,8 @@ const PANEL_MARKUP = `
     .rb-vr [data-role="settings"] fieldset { display: grid; gap: .6rem; min-width: 0; margin: 0; padding: .7rem; border: 1px solid var(--border-color, #444); border-radius: .4rem; }
     .rb-vr [data-role="settings"] legend { padding: 0 .25rem; font-weight: 600; }
     .rb-vr [data-role="settings"] label { display: grid; gap: .25rem; font-size: .85rem; }
+    .rb-vr [data-role="axis-map"] { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; }
+    .rb-vr [data-role="settings"] select { font: inherit; padding: .35rem; }
     .rb-vr [data-role="settings"] input { min-width: 0; box-sizing: border-box; font: inherit; }
     .rb-vr [data-role="settings"] input[type="text"] { width: 100%; padding: .4rem; }
     .rb-vr [data-role="setting-value"] { color: var(--text-secondary, #aaa); font-size: .8rem; }
@@ -101,7 +120,6 @@ const PANEL_MARKUP = `
   <div data-role="actions"><button data-action="enter" disabled>Enter VR</button><button data-action="settings" aria-expanded="false">Settings</button></div>
   <div data-role="status">Discovering camera streams…</div>
   <form data-role="settings" hidden>
-    <datalist id="rb-vr-robot-names"><option value="robot_small"></option><option value="robot_big"></option></datalist>
     ${HANDS.map(armFieldset).join('')}
     <div data-role="settings-error" role="alert"></div>
     <div data-role="settings-actions"><button type="button" data-action="settings-cancel">Cancel</button><button type="submit">Save settings</button></div>
@@ -284,7 +302,7 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
     const settingsForm = root?.querySelector<HTMLFormElement>('[data-role="settings"]');
     if (!settingsForm) return;
     const setValue = (selector: string, value: string) => {
-      const input = settingsForm.querySelector<HTMLInputElement>(selector);
+      const input = settingsForm.querySelector<HTMLInputElement | HTMLSelectElement>(selector);
       if (input) input.value = value;
     };
     for (const hand of HANDS) {
@@ -298,6 +316,7 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       setValue(`[data-setting="${hand}-translation-sensitivity"]`, String(arm.motion.translationSensitivity));
       setValue(`[data-setting="${hand}-rotation-sensitivity"]`, String(arm.motion.rotationSensitivity));
       setValue(`[data-setting="${hand}-squeeze-threshold"]`, String(arm.motion.squeezeThreshold));
+      AXIS_DIRECTIONS.forEach(([direction]) => setValue(`[data-setting="${hand}-axis-${direction}"]`, arm.motion.axisMap[direction]));
       const flangeTopic = settingsForm.querySelector<HTMLElement>(`[data-role="${hand}-flange-topic"]`);
       const actionName = settingsForm.querySelector<HTMLElement>(`[data-role="${hand}-action"]`);
       const showRobotTopics = (robotName: string) => {
@@ -305,10 +324,20 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
         if (actionName) actionName.textContent = fabricsActionForRobot(robotName);
       };
       showRobotTopics(arm.robotName);
-      const robotNameInput = settingsForm.querySelector<HTMLInputElement>(`[data-setting="${hand}-robot-name"]`);
+      const robotNameInput = settingsForm.querySelector<HTMLSelectElement>(`[data-setting="${hand}-robot-name"]`);
+      const targetTopicInput = settingsForm.querySelector<HTMLInputElement>(`[data-setting="${hand}-target-topic"]`);
       if (robotNameInput) {
-        robotNameInput.oninput = () => {
-          if (isRobotName(robotNameInput.value.trim())) showRobotTopics(robotNameInput.value.trim());
+        robotNameInput.onchange = () => {
+          const previous = flangeTopic?.textContent?.split('/')[1] ?? '';
+          showRobotTopics(robotNameInput.value);
+          // Follow the robot unless the topic was customized away from the previous robot's default.
+          if (targetTopicInput && targetTopicInput.value === targetPoseTopicForRobot(previous)) {
+            targetTopicInput.value = targetPoseTopicForRobot(robotNameInput.value);
+          }
+          const homeInput = settingsForm.querySelector<HTMLInputElement>(`[data-setting="${hand}-home-joints"]`);
+          if (homeInput && homeInput.value === defaultHomeForRobot(previous).join(', ')) {
+            homeInput.value = defaultHomeForRobot(robotNameInput.value).join(', ');
+          }
         };
       }
     }
@@ -549,7 +578,8 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
   };
 
   const readSettingsForm = (form: HTMLFormElement): PanelSettings | string => {
-    const value = (setting: string) => form.querySelector<HTMLInputElement>(`[data-setting="${setting}"]`)?.value.trim() ?? '';
+    const value = (setting: string) =>
+      form.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-setting="${setting}"]`)?.value.trim() ?? '';
     const next = parsePanelSettings(panelSettingsToJson(settings));
     for (const hand of HANDS) {
       const label = HAND_LABEL[hand];
@@ -557,10 +587,14 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       const targetPoseTopic = value(`${hand}-target-topic`);
       const targetFrameId = value(`${hand}-target-frame`);
       const homeJointPositions = parseHomeJointPositions(value(`${hand}-home-joints`));
-      if (!isRobotName(robotName)) return `${label} robot namespace must contain only letters, digits, hyphens, and underscores.`;
+      if (!isRobotName(robotName)) return `${label} robot must be one of ${ROBOT_NAMES.join(', ')}.`;
       if (!isRosTopic(targetPoseTopic)) return `${label} pose target topic must be an absolute ROS topic name.`;
       if (!isFrameId(targetFrameId)) return `${label} target frame_id may contain only letters, digits, underscores, hyphens, and slashes.`;
       if (!homeJointPositions) return `${label} home joints must be six comma-separated angles in radians.`;
+      const axisMap = Object.fromEntries(
+        AXIS_DIRECTIONS.map(([direction]) => [direction, value(`${hand}-axis-${direction}`) as RobotAxis]),
+      );
+      if (!isAxisMap(axisMap)) return `${label} forward, left, and up must each drive a different robot axis.`;
       next.arms[hand] = {
         robotName,
         targetPoseTopic,
@@ -572,6 +606,7 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
           translationSensitivity: Number(value(`${hand}-translation-sensitivity`)),
           rotationSensitivity: Number(value(`${hand}-rotation-sensitivity`)),
           squeezeThreshold: Number(value(`${hand}-squeeze-threshold`)),
+          axisMap,
         },
       };
     }

@@ -1,6 +1,8 @@
 import type { RoboBoyJsonObject, RoboBoyJsonValue } from '@tessel-la/roboboy-panel-sdk';
 import {
+  DEFAULT_AXIS_MAP,
   DEFAULT_POSE_TELEOP_MOTION_SETTINGS,
+  isAxisMap,
   type PoseTeleopMotionSettings,
 } from './poseTeleop';
 
@@ -24,7 +26,9 @@ export interface PanelSettings {
   selectedStreamNames: string[] | null;
 }
 
-export const DEFAULT_ROBOT_NAMES: Record<Hand, string> = { left: 'robot_big', right: 'robot_small' };
+// Robot names are fixed on the cell, so settings offer exactly these.
+export const ROBOT_NAMES = ['robot_small', 'robot_big'] as const;
+export const DEFAULT_ROBOT_NAMES: Record<Hand, string> = { left: 'robot_small', right: 'robot_big' };
 
 // fabrics consumes clutched targets on /{robot}/teleop_command (see joy_to_cartesian_command).
 export const targetPoseTopicForRobot = (robotName: string): string =>
@@ -55,7 +59,7 @@ export const defaultHomeForRobot = (robotName: string): number[] =>
 export const isFrameId = (value: string): boolean => /^[A-Za-z0-9_/-]*$/.test(value);
 
 export const isRobotName = (value: string): boolean =>
-  /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value);
+  (ROBOT_NAMES as readonly string[]).includes(value);
 
 export const isRosTopic = (value: string): boolean =>
   /^\/(?:[^/\s]+\/)*[^/\s]+$/.test(value);
@@ -78,7 +82,7 @@ export const defaultArmSettings = (hand: Hand): ArmSettings => {
     targetPoseTopic: targetPoseTopicForRobot(robotName),
     targetFrameId: DEFAULT_TARGET_FRAME_ID,
     homeJointPositions: defaultHomeForRobot(robotName),
-    motion: { ...DEFAULT_POSE_TELEOP_MOTION_SETTINGS },
+    motion: { ...DEFAULT_POSE_TELEOP_MOTION_SETTINGS, axisMap: { ...DEFAULT_AXIS_MAP } },
   };
 };
 
@@ -125,6 +129,7 @@ const parseArmSettings = (value: unknown, hand: Hand): ArmSettings => {
       translationSensitivity: finiteInRange(motion.translationSensitivity, defaults.translationSensitivity, 0.25, 2),
       rotationSensitivity: finiteInRange(motion.rotationSensitivity, defaults.rotationSensitivity, 0.25, 2),
       squeezeThreshold: finiteInRange(motion.squeezeThreshold, defaults.squeezeThreshold, 0.1, 0.9),
+      axisMap: isAxisMap(motion.axisMap) ? { ...motion.axisMap } : { ...DEFAULT_AXIS_MAP },
     },
   };
 };
@@ -145,7 +150,7 @@ const armSettingsToJson = (arm: ArmSettings): RoboBoyJsonObject => ({
   targetPoseTopic: arm.targetPoseTopic,
   targetFrameId: arm.targetFrameId,
   homeJointPositions: [...arm.homeJointPositions],
-  motion: { ...arm.motion },
+  motion: { ...arm.motion, axisMap: { ...arm.motion.axisMap } },
 });
 
 export const panelSettingsToJson = (settings: PanelSettings): RoboBoyJsonObject => ({
