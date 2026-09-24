@@ -358,21 +358,3 @@ const cloneRobotPose = (pose: RobotPose): RobotPose => ({
   position: pose.position.clone(),
   orientation: pose.orientation.clone(),
 });
-
-export const FABRICS_ACTION_TYPE = 'sunrise_ros_msgs/action/ExecutePlannerMotion';
-const HOME_JOINT_TOLERANCE_RAD = 0.01;
-
-/**
- * An ExecutePlannerMotion joint-target goal for a single-arm fabrics controller, or null when the
- * robot is not one of fabrics' arms (robot_small / robot_big). cruise_velocity 0 uses fabrics' speed_scale.
- */
-export const buildHomeGoal = (robotName: string, jointPositions: number[]): RoboBoyJsonObject | null => {
-  const arm = /^robot_(small|big)$/.exec(robotName)?.[1];
-  if (!arm) return null;
-  return {
-    frame: 'arm_base',
-    [`${arm}_joint_target`]: [...jointPositions],
-    [`${arm}_joint_tolerance`]: HOME_JOINT_TOLERANCE_RAD,
-    cruise_velocity: 0,
-  };
-};

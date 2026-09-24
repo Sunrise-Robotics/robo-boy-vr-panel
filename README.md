@@ -24,24 +24,13 @@ the topic fabrics (`sunrise_fabrics_ros`) servoes toward while
 `runtime.teleop_enabled` is set, the same one `joy_to_cartesian_command`
 feeds. Any absolute ROS topic can be configured instead.
 
-**Reset robot** sends that robot a joint-space goal on fabrics'
-`/{robot}/fabrics/execute_planner_motion` action
-(`sunrise_ros_msgs/action/ExecutePlannerMotion`), not a streamed pose. The
-panel first disarms that controller and waits 0.6 s so fabrics' teleop session
-(0.5 s timeout) has ended and cannot pull the arm back to the last streamed
-target when the goal finishes.
-
 ## Requirements
 
 This panel needs a Robo-Boy build that grants the `webxr` capability
 (`xr-spatial-tracking` + `fullscreen` on the panel's sandboxed iframe). That
 change lives in the `vr-panel-webxr-capability` branch of the
 [Sunrise-Robotics/robo-boy](https://github.com/Sunrise-Robotics/robo-boy)
-fork until it's merged upstream. The same branch adds `ros.sendActionGoal`
-(manifest permission `ros.actions`), which Reset robot uses. Robo-Boy's
-rosbridge must be able to import `sunrise_ros_msgs`, which means mounting a
-built `sunrise_ros_msgs` install at `/overlay_ws/<name>` in the `ros-stack`
-container.
+fork until it's merged upstream.
 
 ## Controls
 
@@ -58,9 +47,7 @@ container.
 - **Settings**: one section per controller (defaults: left `robot_small`,
   right `robot_big`). Each has the robot (dropdown), the `PoseStamped`
   publish topic (default `/{robot}/teleop_command`), the published `frame_id`
-  (default `arm_base`; empty passes the flange pose frame through), the six
-  home joint angles Reset robot sends (default: fabrics'
-  `robot_config.default_joint_pos`), an axis map (which robot axis, with
+  (default `arm_base`; empty passes the flange pose frame through), an axis map (which robot axis, with
   sign, controller forward / left / up drives; default +X / +Y / +Z; use it
   when a direction feels swapped or inverted, and rotation follows the same
   map), translation and rotation deadzones and
@@ -74,9 +61,6 @@ container.
 - **Squeeze (hold)**: clutch for that controller's robot. While armed, the
   grip pose moves and rotates the target; on release the target holds. That
   controller's cyan laser is hidden while squeezed.
-- **Reset L / Reset R** (trigger, then again within 3 s to confirm): send that
-  robot to its home joints through fabrics. Also available as buttons in the
-  2D panel. Arming is blocked until the goal finishes.
 - **Status labels**: one per controller, showing robot, WORLD/TCP, and
   armed state; red while idle, green while that controller is sending
   motion. They appear in the 2D panel and above the VR controls.

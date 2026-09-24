@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "co.sunriserobotics.roboboy.vr",
   "name": "VR Camera & Pose Teleop",
-  "description": "View WHEP camera streams in a headset, drive two robots with the controllers, and reset them through fabrics.",
-  "version": "0.4.1",
+  "description": "View WHEP camera streams in a headset, drive two robots with the controllers",
+  "version": "0.5.0",
   "entryPoint": "./dist/index.js",
-  "integrity": "sha256-pLeUg/c8AXMDlXUQItwzWiemAzwGP7W8zyBQmE1ZAbM=",
+  "integrity": "sha256-IxfT+F5gwfJc2X9h+RxmA5xIH3hBHG8rc3eshNmDwVo=",
   "compatibility": {
     "panelApi": "^2.0.0",
     "roboboy": ">=0.8.0-alpha <1.0.0"
@@ -29,9 +29,6 @@
       ],
       "subscribe": [
         "/*/flange_pose"
-      ],
-      "actions": [
-        "/*/fabrics/execute_planner_motion"
       ]
     }
   },

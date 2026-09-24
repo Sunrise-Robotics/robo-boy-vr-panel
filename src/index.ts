@@ -16,8 +16,6 @@ import {
 } from './whep';
 import { VrScene } from './vrScene';
 import {
-  buildHomeGoal,
-  FABRICS_ACTION_TYPE,
   isAxisMap,
   PoseTeleopController,
   ROBOT_AXES,
@@ -25,16 +23,13 @@ import {
   type RobotAxis,
 } from './poseTeleop';
 import {
-  defaultHomeForRobot,
   defaultPanelSettings,
-  fabricsActionForRobot,
   flangePoseTopicForRobot,
   HANDS,
   isRosTopic,
   isFrameId,
   isRobotName,
   panelSettingsToJson,
-  parseHomeJointPositions,
   parsePanelSettings,
   ROBOT_NAMES,
   type Hand,
@@ -52,12 +47,6 @@ const POSE_STAMPED_TYPE = 'geometry_msgs/msg/PoseStamped';
 const HAND_LABEL: Record<Hand, string> = { left: 'Left', right: 'Right' };
 const ARM_BUTTON: Record<Hand, string> = { left: 'X', right: 'A' };
 const FRAME_BUTTON: Record<Hand, string> = { left: 'Y', right: 'B' };
-// A reset moves the robot, so it takes a second press within this window to confirm.
-const RESET_CONFIRM_MS = 3000;
-// Longer than fabrics' runtime.teleop_timeout (0.5 s), so its teleop session has ended before the
-// goal arrives and cannot resume toward the last streamed target once the goal finishes.
-const TELEOP_DRAIN_MS = 600;
-const RESET_TIMEOUT_MS = 120_000;
 
 const AXIS_DIRECTIONS: Array<[keyof AxisMap, string]> = [['forward', 'forward'], ['left', 'left'], ['up', 'up']];
 const options = (values: readonly string[], label = (value: string) => value) =>
@@ -69,8 +58,7 @@ const armFieldset = (hand: Hand) => `
       <label>Robot<select data-setting="${hand}-robot-name">${options(ROBOT_NAMES)}</select></label>
       <label>Pose target topic<input data-setting="${hand}-target-topic" type="text" required /></label>
       <label>Target frame_id<input data-setting="${hand}-target-frame" type="text" pattern="[A-Za-z0-9_/\\-]*" placeholder="(flange pose frame)" /></label>
-      <label>Reset home joints (rad, 6 comma-separated)<input data-setting="${hand}-home-joints" type="text" required /></label>
-      <span data-role="setting-value">Publishes <code>geometry_msgs/msg/PoseStamped</code> from <code data-role="${hand}-flange-topic"></code>; reset sends a joint goal to <code data-role="${hand}-action"></code>.</span>
+      <span data-role="setting-value">Publishes <code>geometry_msgs/msg/PoseStamped</code> from <code data-role="${hand}-flange-topic"></code>.</span>
       <div data-role="axis-map">${AXIS_DIRECTIONS.map(([direction, label]) =>
         `<label>Controller ${label} moves robot<select data-setting="${hand}-axis-${direction}">${options(ROBOT_AXES, (axis) => axis.toUpperCase())}</select></label>`).join('')}</div>
       <label>Translation deadzone <span data-role="${hand}-translation-deadzone-value"></span><input data-setting="${hand}-translation-deadzone" type="range" min="0" max="0.03" step="0.001" /></label>
@@ -81,7 +69,7 @@ const armFieldset = (hand: Hand) => `
     </fieldset>`;
 
 const handStatusMarkup = (hand: Hand) => `
-  <div data-role="hand" data-hand="${hand}" data-moving="false"><span data-role="motion-light"></span><span data-role="hand-text"></span><button type="button" data-action="reset-${hand}">Reset robot</button></div>`;
+  <div data-role="hand" data-hand="${hand}" data-moving="false"><span data-role="motion-light"></span><span data-role="hand-text"></span></div>`;
 
 const PANEL_MARKUP = `
 <div class="rb-vr">
@@ -94,8 +82,6 @@ const PANEL_MARKUP = `
     .rb-vr [data-role="status"] { color: var(--text-secondary, #aaa); font-size: .85rem; white-space: pre-line; }
     .rb-vr [data-role="hand"] { display: flex; align-items: center; gap: .5rem; font-weight: 600; color: var(--error-color, #dd6b6b); }
     .rb-vr [data-role="hand"][data-moving="true"] { color: var(--success-color, #4caf50); }
-    .rb-vr [data-role="hand"] button { margin-left: auto; padding: .3rem .7rem; font-weight: 400; }
-    .rb-vr [data-role="hand"] button[data-pending="true"] { background: var(--error-color, #b62222); }
     .rb-vr [data-role="motion-light"] { flex: none; width: .7rem; height: .7rem; border-radius: 50%; background: var(--error-color, #b62222); }
     .rb-vr [data-role="hand"][data-moving="true"] [data-role="motion-light"] { background: var(--success-color, #25b84b); }
     .rb-vr [data-role="cameras"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .35rem .75rem; }
@@ -126,7 +112,7 @@ const PANEL_MARKUP = `
   </form>
   <div data-role="cameras" aria-label="Camera streams"></div>
   ${HANDS.map(handStatusMarkup).join('')}
-  <details><summary>VR controls</summary><ul><li>Trigger at a camera name toggles that stream.</li><li>Trigger at a camera panel grabs and repositions it.</li><li>Each controller drives its own robot (see Settings).</li><li>A (right) / X (left) arms or disarms that robot; arming re-anchors to its latest flange pose.</li><li>B (right) / Y (left) switches that robot's translation between world and tool (TCP) axes.</li><li>Hold a controller's squeeze as a clutch to move its target; release holds it.</li><li>Trigger at Reset L / Reset R, then again within 3 s, sends that robot home through fabrics.</li><li>Trigger at Exit VR leaves the headset session.</li></ul></details>
+  <details><summary>VR controls</summary><ul><li>Trigger at a camera name toggles that stream.</li><li>Trigger at a camera panel grabs and repositions it.</li><li>Each controller drives its own robot (see Settings).</li><li>A (right) / X (left) arms or disarms that robot; arming re-anchors to its latest flange pose.</li><li>B (right) / Y (left) switches that robot's translation between world and tool (TCP) axes.</li><li>Hold a controller's squeeze as a clutch to move its target; release holds it.</li><li>Trigger at Exit VR leaves the headset session.</li></ul></details>
   <div data-role="previews"></div>
   <div data-role="canvas-host"></div>
 </div>
@@ -138,8 +124,6 @@ interface ArmRuntime {
   generation: number;
   armed: boolean;
   moving: boolean;
-  resetPendingTimer: ReturnType<typeof setTimeout> | null;
-  resetInFlight: boolean;
 }
 
 const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance => {
@@ -195,8 +179,6 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       generation: 0,
       armed: false,
       moving: false,
-      resetPendingTimer: null,
-      resetInFlight: false,
     };
     arm.teleop.setMotionSettings(settings.arms[hand].motion);
     return arm;
@@ -207,79 +189,17 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
     const arm = arms[hand];
     const robotName = settings.arms[hand].robotName;
     const frame = arm.teleop.frame === 'tool' ? 'TCP' : 'WORLD';
-    const state = arm.resetInFlight ? 'RESETTING' : arm.armed ? 'ARMED' : 'off';
+    const state = arm.armed ? 'ARMED' : 'off';
     const el = root?.querySelector<HTMLElement>(`[data-role="hand"][data-hand="${hand}"]`);
     if (el) {
       el.dataset.moving = String(arm.moving);
       const text = el.querySelector<HTMLElement>('[data-role="hand-text"]');
       if (text) text.textContent = `${HAND_LABEL[hand]} → ${robotName} · ${frame} · ${state}`;
-      const button = el.querySelector<HTMLButtonElement>('button');
-      if (button) {
-        button.disabled = arm.resetInFlight;
-        button.dataset.pending = String(arm.resetPendingTimer !== null);
-        button.textContent = arm.resetPendingTimer !== null ? 'Confirm reset' : 'Reset robot';
-      }
     }
     const short = robotName.replace(/^robot_/, '');
     vrScene?.setHandStatus(hand, { text: `${hand === 'left' ? 'L' : 'R'} ${short} · ${frame} · ${state}`, moving: arm.moving });
-    vrScene?.setResetButton(
-      hand,
-      arm.resetInFlight ? `Resetting ${short}…` : arm.resetPendingTimer !== null ? `Confirm reset ${short}?` : `Reset robot ${short}`,
-      arm.resetPendingTimer !== null,
-    );
   }
   const renderHands = () => HANDS.forEach(renderHand);
-
-  const clearResetPending = (hand: Hand) => {
-    const arm = arms[hand];
-    if (arm.resetPendingTimer !== null) clearTimeout(arm.resetPendingTimer);
-    arm.resetPendingTimer = null;
-  };
-
-  const executeReset = async (hand: Hand) => {
-    const arm = arms[hand];
-    const { robotName, homeJointPositions } = settings.arms[hand];
-    const goal = buildHomeGoal(robotName, homeJointPositions);
-    if (!goal) {
-      setStatus(`${robotName} is not a fabrics arm (robot_small or robot_big); reset unavailable.`);
-      return;
-    }
-    if (typeof ros.sendActionGoal !== 'function') {
-      setStatus('This Robo-Boy build cannot send ROS action goals; update Robo-Boy to reset robots.');
-      return;
-    }
-    arm.teleop.stop();
-    arm.resetInFlight = true;
-    renderHand(hand);
-    const action = fabricsActionForRobot(robotName);
-    setStatus(`Sending ${robotName} home through ${action}…`);
-    try {
-      await new Promise((resolve) => setTimeout(resolve, TELEOP_DRAIN_MS));
-      const result = await ros.sendActionGoal({ action, actionType: FABRICS_ACTION_TYPE, goal, timeoutMs: RESET_TIMEOUT_MS });
-      setStatus(`${robotName} reset: ${typeof result.message === 'string' && result.message ? result.message : 'home reached'}. Arm again to teleoperate.`);
-    } catch (error) {
-      logger.warn(`Unable to reset ${robotName}.`, error);
-      setStatus(`${robotName} reset failed: ${errorText(error)}`);
-    } finally {
-      arm.resetInFlight = false;
-      renderHand(hand);
-    }
-  };
-
-  const onResetPressed = (hand: Hand) => {
-    const arm = arms[hand];
-    if (arm.resetInFlight) return;
-    if (arm.resetPendingTimer === null) {
-      arm.resetPendingTimer = setTimeout(() => {
-        arm.resetPendingTimer = null;
-        renderHand(hand);
-      }, RESET_CONFIRM_MS);
-      renderHand(hand);
-      return;
-    }
-    clearResetPending(hand);
-    void executeReset(hand);
-  };
 
   const stopAll = () => HANDS.forEach((hand) => arms[hand].teleop.stop());
 
@@ -310,7 +230,6 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       setValue(`[data-setting="${hand}-robot-name"]`, arm.robotName);
       setValue(`[data-setting="${hand}-target-topic"]`, arm.targetPoseTopic);
       setValue(`[data-setting="${hand}-target-frame"]`, arm.targetFrameId);
-      setValue(`[data-setting="${hand}-home-joints"]`, arm.homeJointPositions.join(', '));
       setValue(`[data-setting="${hand}-translation-deadzone"]`, String(arm.motion.translationDeadzoneM));
       setValue(`[data-setting="${hand}-rotation-deadzone"]`, String(arm.motion.rotationDeadzoneRad * 180 / Math.PI));
       setValue(`[data-setting="${hand}-translation-sensitivity"]`, String(arm.motion.translationSensitivity));
@@ -318,10 +237,8 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       setValue(`[data-setting="${hand}-squeeze-threshold"]`, String(arm.motion.squeezeThreshold));
       AXIS_DIRECTIONS.forEach(([direction]) => setValue(`[data-setting="${hand}-axis-${direction}"]`, arm.motion.axisMap[direction]));
       const flangeTopic = settingsForm.querySelector<HTMLElement>(`[data-role="${hand}-flange-topic"]`);
-      const actionName = settingsForm.querySelector<HTMLElement>(`[data-role="${hand}-action"]`);
       const showRobotTopics = (robotName: string) => {
         if (flangeTopic) flangeTopic.textContent = flangePoseTopicForRobot(robotName);
-        if (actionName) actionName.textContent = fabricsActionForRobot(robotName);
       };
       showRobotTopics(arm.robotName);
       const robotNameInput = settingsForm.querySelector<HTMLSelectElement>(`[data-setting="${hand}-robot-name"]`);
@@ -333,10 +250,6 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
           // Follow the robot unless the topic was customized away from the previous robot's default.
           if (targetTopicInput && targetTopicInput.value === targetPoseTopicForRobot(previous)) {
             targetTopicInput.value = targetPoseTopicForRobot(robotNameInput.value);
-          }
-          const homeInput = settingsForm.querySelector<HTMLInputElement>(`[data-setting="${hand}-home-joints"]`);
-          if (homeInput && homeInput.value === defaultHomeForRobot(previous).join(', ')) {
-            homeInput.value = defaultHomeForRobot(robotNameInput.value).join(', ');
           }
         };
       }
@@ -586,11 +499,9 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       const robotName = value(`${hand}-robot-name`);
       const targetPoseTopic = value(`${hand}-target-topic`);
       const targetFrameId = value(`${hand}-target-frame`);
-      const homeJointPositions = parseHomeJointPositions(value(`${hand}-home-joints`));
       if (!isRobotName(robotName)) return `${label} robot must be one of ${ROBOT_NAMES.join(', ')}.`;
       if (!isRosTopic(targetPoseTopic)) return `${label} pose target topic must be an absolute ROS topic name.`;
       if (!isFrameId(targetFrameId)) return `${label} target frame_id may contain only letters, digits, underscores, hyphens, and slashes.`;
-      if (!homeJointPositions) return `${label} home joints must be six comma-separated angles in radians.`;
       const axisMap = Object.fromEntries(
         AXIS_DIRECTIONS.map(([direction]) => [direction, value(`${hand}-axis-${direction}`) as RobotAxis]),
       );
@@ -599,7 +510,6 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
         robotName,
         targetPoseTopic,
         targetFrameId,
-        homeJointPositions,
         motion: {
           translationDeadzoneM: Number(value(`${hand}-translation-deadzone`)),
           rotationDeadzoneRad: Number(value(`${hand}-rotation-deadzone`)) * Math.PI / 180,
@@ -624,13 +534,8 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       if (!root) throw new Error('Unable to create the VR panel root.');
 
       vrScene = new VrScene({
-        onControllerFrame: (hand, frame) => {
-          const arm = arms[hand];
-          // No re-arming mid-reset: a target anchored mid-motion would pull the robot back afterwards.
-          arm.teleop.update(arm.resetInFlight ? { ...frame, armPressed: false } : frame);
-        },
+        onControllerFrame: (hand, frame) => arms[hand].teleop.update(frame),
         onToggle: (name) => toggleStream(name, !selectedStreamNames.has(name)),
-        onReset: onResetPressed,
         onExit: () => {
           stopAll();
           setStatus('VR session ended.');
@@ -647,7 +552,6 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
         });
       onAction('settings', () => setSettingsOpen(true));
       onAction('settings-cancel', () => setSettingsOpen(false));
-      HANDS.forEach((hand) => onAction(`reset-${hand}`, () => onResetPressed(hand)));
       onAction('enter', async () => {
         if (!navigator.xr) throw new Error('WebXR is unavailable in this frame.');
         await vrScene?.enter();
@@ -696,7 +600,6 @@ const createPanelInstance = (context: RoboBoyPanelContext): RoboBoyPanelInstance
       stopAll();
       await Promise.all(HANDS.map(async (hand) => {
         const arm = arms[hand];
-        clearResetPending(hand);
         arm.generation += 1;
         const subscription = arm.subscription;
         arm.subscription = null;

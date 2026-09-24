@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as THREE from 'three';
-import { axisMapMatrix, buildHomeGoal, DEFAULT_POSE_TELEOP_MOTION_SETTINGS, PoseTeleopController, parsePoseStamped } from '../src/poseTeleop.ts';
+import { axisMapMatrix, DEFAULT_POSE_TELEOP_MOTION_SETTINGS, PoseTeleopController, parsePoseStamped } from '../src/poseTeleop.ts';
 
 const robotPose = {
   header: { frame_id: 'world' },
@@ -140,17 +140,6 @@ test('B/Y toggles translation into the tool frame, like joy_to_cartesian', () =>
   assert.equal(controller.frame, 'tool');
   const { x, y } = published.at(-1).message.pose.position;
   assert.ok(Math.abs(x - 1.02) < 1e-9 && Math.abs(y - 2) < 1e-9, `got ${x}, ${y}`);
-});
-
-test('builds a single-arm fabrics joint goal for known arms only', () => {
-  const home = [1, 2, 3, 4, 5, 6];
-  assert.deepEqual(buildHomeGoal('robot_big', home), {
-    frame: 'arm_base',
-    big_joint_target: home,
-    big_joint_tolerance: 0.01,
-    cruise_velocity: 0,
-  });
-  assert.equal(buildHomeGoal('robot_other', home), null);
 });
 
 test('axis map remaps controller left/right onto robot forward/back', () => {

@@ -63,7 +63,6 @@ interface CameraButton {
 export interface VrSceneOptions {
   onControllerFrame(hand: Hand, frame: VrControllerFrame): void;
   onToggle(id: string): void;
-  onReset(hand: Hand): void;
   onExit(): void;
 }
 
@@ -106,10 +105,8 @@ export class VrScene {
   private readonly exitButton: LabelMesh;
   // Per hand: robot, frame, and armed state, green while that controller is sending motion.
   private readonly handStatus: Record<Hand, LabelMesh>;
-  private readonly resetButtons: Record<Hand, LabelMesh>;
   private readonly onControllerFrame: VrSceneOptions['onControllerFrame'];
   private readonly onToggle: VrSceneOptions['onToggle'];
-  private readonly onReset: VrSceneOptions['onReset'];
   private readonly onExitCallback: VrSceneOptions['onExit'];
   private session: XRSession | null = null;
   private grabbedBy = new Map<THREE.XRTargetRaySpace, THREE.Mesh>();
@@ -117,7 +114,6 @@ export class VrScene {
   constructor(options: VrSceneOptions) {
     this.onControllerFrame = options.onControllerFrame;
     this.onToggle = options.onToggle;
-    this.onReset = options.onReset;
     this.onExitCallback = options.onExit;
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -161,11 +157,7 @@ export class VrScene {
       left: labelMesh('L', '#b62222', -0.6, 2.2),
       right: labelMesh('R', '#b62222', 0.6, 2.2),
     };
-    this.resetButtons = {
-      left: labelMesh('Reset L', '#8a5a14', 1.25, 1.51),
-      right: labelMesh('Reset R', '#8a5a14', 1.25, 1.17),
-    };
-    this.scene.add(this.exitButton, ...Object.values(this.handStatus), ...Object.values(this.resetButtons));
+    this.scene.add(this.exitButton, ...Object.values(this.handStatus));
 
     this.renderer.setAnimationLoop(() => this.render());
   }
@@ -220,10 +212,6 @@ export class VrScene {
     setLabel(this.handStatus[hand], status.text, status.moving ? '#25b84b' : '#b62222');
   }
 
-  setResetButton(hand: Hand, text: string, pending: boolean): void {
-    setLabel(this.resetButtons[hand], text, pending ? '#b62222' : '#8a5a14');
-  }
-
   async enter(): Promise<void> {
     this.panels.forEach((entry) => entry.mesh.position.set(...entry.home));
     const session = await navigator.xr!.requestSession('immersive-vr', { optionalFeatures: ['local-floor'] });
@@ -242,7 +230,7 @@ export class VrScene {
     [...this.panels.keys()].forEach((id) => this.removeStream(id));
     this.buttons.forEach((button) => this.disposeButton(button));
     this.buttons.clear();
-    [this.exitButton, ...Object.values(this.handStatus), ...Object.values(this.resetButtons)].forEach(disposeLabel);
+    [this.exitButton, ...Object.values(this.handStatus)].forEach(disposeLabel);
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
@@ -270,11 +258,6 @@ export class VrScene {
     const button = this.hits(controller, [...this.buttons.values()]) as THREE.Mesh | undefined;
     if (button) {
       this.onToggle(String(button.userData.cameraId));
-      return;
-    }
-    const reset = HANDS.find((hand) => this.hits(controller, [this.resetButtons[hand]]));
-    if (reset) {
-      this.onReset(reset);
       return;
     }
     if (this.hits(controller, [this.exitButton])) {
